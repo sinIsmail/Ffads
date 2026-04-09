@@ -440,39 +440,72 @@ export default function ProductDetailScreen({ route, navigation }) {
         <View style={styles.infoSection}>
           <Text style={styles.productName}>{product.name}</Text>
           <Text style={styles.brand}>{product.brand}</Text>
-          {product.source === 'openfoodfacts' && (
-            <Text style={styles.sourceLabel}>via Open Food Facts</Text>
-          )}
-          {product.source === 'ocr' && (
-            <Text style={styles.sourceLabel}>Scanned by AI</Text>
-          )}
+          <View style={styles.metaRow}>
+            {product.source === 'openfoodfacts' && (
+              <View style={[styles.sourceBadge, { backgroundColor: colors.secondarySoft }]}>
+                <Text style={[styles.sourceText, { color: colors.secondaryDark }]}>Open Food Facts</Text>
+              </View>
+            )}
+            {product.source === 'cache' && (
+              <View style={[styles.sourceBadge, { backgroundColor: colors.primarySoft }]}>
+                <Text style={[styles.sourceText, { color: colors.primaryDark }]}>Cached</Text>
+              </View>
+            )}
+            {product.source === 'ocr' && (
+              <View style={[styles.sourceBadge, { backgroundColor: '#FEF3C7' }]}>
+                <Ionicons name="sparkles" size={11} color="#92400E" style={{ marginRight: 3 }} />
+                <Text style={[styles.sourceText, { color: '#92400E' }]}>Gemini AI Extracted</Text>
+              </View>
+            )}
+          </View>
+
         </View>
 
-        {/* Macro Health — simple inline */}
-        {!macroResult.missingData && (
-          <View style={styles.macroRow}>
-            <View style={[styles.macroScorePill, 
-              macroResult.score >= 8 ? { backgroundColor: '#ECFDF5' } : 
-              macroResult.score >= 5 ? { backgroundColor: '#FFFBEB' } : { backgroundColor: '#FEF2F2' }
-            ]}>
-              <Text style={[styles.macroScoreNum,
-                macroResult.score >= 8 ? { color: '#047857' } : 
-                macroResult.score >= 5 ? { color: '#B45309' } : { color: '#DC2626' }
-              ]}>{macroResult.score}/10</Text>
-            </View>
-            <View style={styles.macroTagsWrap}>
-              {macroResult.breaches.length === 0 ? (
-                <Text style={styles.macroSafeLabel}>Within safe limits</Text>
-              ) : (
-                macroResult.breaches.map((b, i) => (
-                  <Text key={i} style={styles.macroBreachLabel}>
-                    {b.type} {b.value}{b.unit}
-                  </Text>
-                ))
-              )}
-            </View>
+        {/* ═══ RAW DATA RATING (Zero AI — Instant from nutrition table) ═══ */}
+        <View style={styles.rawRatingCard}>
+          <View style={styles.rawRatingHeader}>
+            <Ionicons name="nutrition-outline" size={18} color="#1A1A1A" />
+            <Text style={styles.rawRatingTitle}>Health Check</Text>
+            <Text style={styles.rawRatingSubtitle}>WHO / FSSAI Limits</Text>
           </View>
-        )}
+
+          {macroResult.missingData ? (
+            <View style={styles.rawRatingBody}>
+              <Ionicons name="alert-circle-outline" size={20} color="#999" />
+              <Text style={styles.rawRatingMissing}>Nutrition data not available for this product.</Text>
+            </View>
+          ) : (
+            <View style={styles.rawRatingBody}>
+              {/* Score Circle */}
+              <View style={[styles.rawScoreCircle, 
+                macroResult.score >= 8 ? styles.rawScoreGreen : 
+                macroResult.score >= 5 ? styles.rawScoreYellow : styles.rawScoreRed
+              ]}>
+                <Text style={styles.rawScoreNumber}>{macroResult.score}</Text>
+                <Text style={styles.rawScoreMax}>/10</Text>
+              </View>
+
+              {/* Breach Tags */}
+              <View style={styles.rawBreachList}>
+                {macroResult.breaches.length === 0 ? (
+                  <View style={styles.rawSafeBadge}>
+                    <Ionicons name="checkmark-circle" size={16} color="#047857" />
+                    <Text style={styles.rawSafeText}>All within safe limits</Text>
+                  </View>
+                ) : (
+                  macroResult.breaches.map((b, i) => (
+                    <View key={i} style={styles.rawBreachBadge}>
+                      <Ionicons name="warning" size={14} color="#B45309" />
+                      <Text style={styles.rawBreachText}>
+                        {b.source}: High {b.type} ({b.value}{b.unit})
+                      </Text>
+                    </View>
+                  ))
+                )}
+              </View>
+            </View>
+          )}
+        </View>
 
         {/* ═══ Deep AI Analysis Card (3-State: Idle Button → Loading → Results) ═══ */}
         <AICard
@@ -490,13 +523,25 @@ export default function ProductDetailScreen({ route, navigation }) {
 
 
 
-        {/* Safe Portion */}
+        {/* Doctor-Grade Max Safe Portion Limit */}
         {safePortion && !safePortion.isSafe && (
-          <View style={styles.safePortionRow}>
-            <Text style={styles.safePortionLabel}>
-              Daily limit: <Text style={{ fontWeight: '800' }}>{safePortion.maxGrams}g</Text>
-            </Text>
-            <Text style={styles.safePortionNote}>{safePortion.message}</Text>
+          <View style={[styles.section, { marginBottom: spacing.xl }]}>
+            <View style={[styles.safePortionCard, safePortion.isSevere && styles.safePortionSevere]}>
+              <View style={styles.safePortionHeader}>
+                <Ionicons 
+                  name={safePortion.isSevere ? "warning" : "information-circle"} 
+                  size={20} 
+                  color={safePortion.isSevere ? '#EF4444' : '#F59E0B'} 
+                />
+                <Text style={styles.safePortionTitle}>Max Safe Portion</Text>
+              </View>
+              <Text style={styles.safePortionValue}>
+                {safePortion.maxGrams} <Text style={styles.safePortionUnit}>grams / ml per day</Text>
+              </Text>
+              <Text style={styles.safePortionDesc}>
+                {safePortion.message}
+              </Text>
+            </View>
           </View>
         )}
 
@@ -565,13 +610,19 @@ export default function ProductDetailScreen({ route, navigation }) {
           </View>
         )}
 
-        {/* Contribute */}
-        <TouchableOpacity style={styles.contributeRow} onPress={handleContribute} activeOpacity={0.7}>
-          <Ionicons name="camera-outline" size={16} color="#9CA3AF" />
-          <Text style={styles.contributeText}>Upload better photos</Text>
-        </TouchableOpacity>
+        {/* Contribute Button (Always shown) */}
+        <View style={styles.section}>
+          <TouchableOpacity style={styles.contributeBtn} onPress={handleContribute} activeOpacity={0.8}>
+            <Ionicons name="camera-outline" size={20} color="#FFF" />
+            <Text style={styles.contributeBtnText}>Upload Product Photos</Text>
+          </TouchableOpacity>
+          <Text style={styles.analyzeHint}>
+            Help us improve the database by uploading better photos for this product.
+          </Text>
+        </View>
 
-        <Text style={styles.barcodeText}>{product.barcode}</Text>
+
+        <Text style={styles.barcodeText}>Barcode: {product.barcode}</Text>
 
         <View style={{ height: 120 }} />
       </ScrollView>
