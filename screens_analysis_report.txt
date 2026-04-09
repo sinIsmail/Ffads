@@ -1,0 +1,66 @@
+Ffads Screens & UI Architecture Analysis
+
+Goal: Review the codebase to understand the screen flow, states, and feature sets, with recommendations to achieve a premium, "Apple-like" aesthetic.
+
+---
+1. ScannerScreen.js
+---
+- Role: The entry point for barcode scanning, fallback manual input, and session history display.
+- Functions: `ScannerScreen`
+- Local States:
+  - `cameraOpen` (boolean): Toggles the camera view.
+  - `barcodeInput` (string): Captures manual barcode typings.
+  - `scanning` (boolean): Loading state for when a product is being fetched via the ProductService.
+  - `toast` (object): Controls the custom in-app animated notifications (replacing old ugly Alerts).
+- Global State / Hooks: `useCameraPermissions`, `useProducts`, `useUser` context for dispatching actions.
+
+---
+2. ProfileScreen.js
+---
+- Role: The control center for user preferences (allergies, diet), AI model management, API key inputs, and full persistent scan history.
+- Functions: `ProfileScreen`, `HealthTab`, `AITab`, `ApiTab`, `HistoryTab`, `StatusRow`
+- Local States:
+  - `activeTab` (integer): Tracks which inner top-tab component is being rendered (Health, AI, API, History).
+- Flow Alignment: Works cleanly as a multi-step settings page but should ensure its scrolling doesn't overlap unnaturally with the FloatingTabBar. The sub-components strictly read off `UserContext` meaning state is securely decoupled.
+
+---
+3. CompareScreen.js
+---
+- Role: Side-by-side product comparison tool showing health scores, nutritional breakdown, and a color-coded ingredient breakdown visualizer.
+- Functions: `CompareScreen`, `TableRow`, `BarSegment`, `LegendDot`, plus formatting helpers (`fmtG`, `fmtMg`, `fmtKcal`, `lower`, `higher`).
+- Local States: None. 
+  - This is a highly optimized "Pure" component visually. It purely derives its data via `useMemo` based on the `compareSelection` array from the `ProductContext`.
+
+---
+4. ProductDetailScreen.js
+---
+- Role: The rich detail view for a specific scanned product. Displays deep Gemini insights, detailed nutrition tables, and ingredient dictionaries.
+- Functions: `ProductDetailScreen`
+- Local States:
+  - `selectedIngredient` (object): Tracks which ingredient the user tapped for the modal.
+  - `modalVisible` (boolean): Controls the ingredient dictionary popup.
+  - `analyzing` (boolean): Tracks loading state when the AI pipeline is generating insights.
+  - `analysisResult` (object): Caches the AI insights and local scoring purely for the view.
+
+===============================================
+Recommendations for an "Apple-like" Premium App
+===============================================
+To strip away the "generic/AI-generated" vibe and build a product that feels like a native iOS/Apple application, consider the following refinements:
+
+1. Typography & Hierarchy: 
+   Limit font families to system defaults (SF Pro on iOS) but utilize extreme contrast in weights. Use large, very bold titles (e.g., "Scanner", font-weight: '800') and muted, tracking-adjusted captions. Ensure generous line heights (1.5x) for AI insight paragraphs.
+
+2. Glassmorphism & Depth:
+   Apple rarely uses stark-colored solid backgrounds for floating elements. Replace solid flat colors on modals and the FloatingTabBar with translucent Blurs (using `expo-blur`) over a crisp white or pure black background. 
+   
+3. Soft Shadows:
+   Current shadows might be too harsh. True premium apps use highly diffused, colored shadows (e.g., `shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 20`).
+
+4. Micro-interactions (Haptics):
+   A major hallmark of Apple apps is haptic feedback. Adding `expo-haptics` (ImpactFeedbackStyle.Light) to button presses, selecting a compare product, and tab switches instantly elevates the "feel" from a web app to a native app.
+
+5. Unified Empty States:
+   Current empty states are functional but could be more whimsical, utilizing soft pastel vector illustrations or minimalist iconography rather than basic emojis.
+
+6. Modal Presentations:
+   The `ProductDetailScreen` modal currently feels like an Android popup. Refactor this to use a Bottom Sheet (like `@gorhom/bottom-sheet`) which seamlessly slides up from the bottom with spring physics, a staple in modern iOS design.
