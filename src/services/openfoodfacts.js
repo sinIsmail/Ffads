@@ -80,7 +80,7 @@ export async function lookupBarcode(barcode) {
     });
 
     if (!response.ok) {
-      console.warn('[OFF] Lookup returned HTTP', response.status);
+      console.warn(`🌍 [OFF] Lookup → ⚠️ HTTP ${response.status} for barcode "${barcode}"`);
       return null;
     }
 
@@ -89,14 +89,14 @@ export async function lookupBarcode(barcode) {
     try {
       data = JSON.parse(text);
     } catch {
-      console.warn('[OFF] Response was not valid JSON (probably HTML error page)');
+      console.warn(`🌍 [OFF] Lookup → ⚠️ Invalid JSON response for barcode "${barcode}"`);
       return null;
     }
 
     if (data.status !== 1 || !data.product) return null;
     return normalizeProduct(data.product, barcode);
   } catch (error) {
-    console.warn('[OFF] Lookup failed:', error.message);
+    console.error(`🌍 [OFF] Lookup → ❌ Failed for "${barcode}": ${error.message}`);
     return null;
   }
 }
@@ -145,7 +145,7 @@ export async function uploadImageToOFF(barcode, base64Image, imageField = 'front
     await FileSystem.writeAsStringAsync(tmpPath, base64Image, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    console.log(`[OFF] Wrote temp file: ${tmpPath}`);
+    console.log(`🌍 [OFF:Image] Step 1 → Temp file written: ${tmpFileName}`);
 
     // ── Build FormData ──────────────────────────────────────────────────────
     const formData = new FormData();
@@ -167,7 +167,7 @@ export async function uploadImageToOFF(barcode, base64Image, imageField = 'front
     // imagefield tells OFF which slot to put this image into
     formData.append('imagefield', imageField);
 
-    console.log(`[OFF] Uploading "${imageField}" image → barcode ${barcode}...`);
+    console.log(`🌍 [OFF:Image] Step 2 → Uploading "${imageField}" image for barcode ${barcode}...`);
 
     // ── Send request ────────────────────────────────────────────────────────
     const response = await fetch(OFF_IMAGE_URL, {
@@ -181,13 +181,13 @@ export async function uploadImageToOFF(barcode, base64Image, imageField = 'front
     });
 
     const rawText = await response.text();
-    console.log(`[OFF] Image upload HTTP ${response.status} — response: ${rawText.substring(0, 300)}`);
+    console.log(`🌍 [OFF:Image] Step 3 → HTTP ${response.status} — ${rawText.substring(0, 150)}`);
 
     let result;
     try { result = JSON.parse(rawText); } catch { /* HTML error page fallthrough */ }
 
     if (result?.status === 1 || result?.status_verbose === 'fields saved') {
-      console.log(`[OFF] ✅ Image uploaded: ${barcode} (${imageField})`);
+      console.log(`🌍 [OFF:Image] ✅ Image uploaded: ${barcode} (${imageField})`);
       return { success: true };
     }
 
@@ -197,7 +197,7 @@ export async function uploadImageToOFF(barcode, base64Image, imageField = 'front
     };
 
   } catch (error) {
-    console.warn(`[OFF] Image upload failed (${imageField}):`, error.message);
+    console.error(`🌍 [OFF:Image] ❌ Upload failed (${imageField}): ${error.message}`);
     return { success: false, error: error.message };
   } finally {
     // Always clean up temp file
@@ -223,7 +223,7 @@ export async function contributeToOFF(product, base64Images = [], creds = {}) {
     return { success: false, error: 'OFF credentials not configured — add them in Profile → API tab' };
   }
 
-  console.log(`[OFF] Contributing barcode ${product.barcode} as user "${username}" (app: ${APP_NAME} ${APP_VERSION})`);
+  console.log(`\n🌍 [OFF:Contribute] START → barcode=${product.barcode} | user="${username}" | app=${APP_NAME} ${APP_VERSION}`);
 
   try {
     // ── Step 1: Submit text/structured data as x-www-form-urlencoded ──────────
@@ -266,11 +266,11 @@ export async function contributeToOFF(product, base64Images = [], creds = {}) {
     });
 
     const textRaw = await textResponse.text();
-    console.log(`[OFF] Text submit HTTP ${textResponse.status} — ${textRaw.substring(0, 200)}`);
+    console.log(`🌍 [OFF:Contribute] Step 1 → Text data HTTP ${textResponse.status}`);
 
     let textResult;
     try { textResult = JSON.parse(textRaw); } catch { /* ignore */ }
-    console.log('[OFF] Text result:', textResult?.status_verbose || 'unknown');
+    console.log(`🌍 [OFF:Contribute] Step 1 → Result: ${textResult?.status_verbose || 'unknown'}`);
 
     // ── Step 2: Upload images sequentially ──────────────────────────────────
     // Order matches what ProductDetailScreen passes: [front, nutrition, ingredients]
@@ -304,7 +304,7 @@ export async function contributeToOFF(product, base64Images = [], creds = {}) {
     };
 
   } catch (error) {
-    console.warn('[OFF] Contribution failed:', error.message);
+    console.error(`🌍 [OFF:Contribute] ❌ Contribution FAILED: ${error.message}`);
     return { success: false, error: error.message };
   }
 }

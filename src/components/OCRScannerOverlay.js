@@ -74,8 +74,8 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        quality: 0.45,   // ← was 0.8; lower = much smaller base64 on high-res sensors
+        allowsEditing: true,   // Restored crop & rotate UI per user request
+        quality: 0.3,          // ← Keep quality low to prevent memory crashes
         base64: true,
       });
       if (!result.canceled && result.assets?.length > 0) {
@@ -86,7 +86,7 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
         }
 
         const sizeKB = Math.round(asset.base64.length / 1024);
-        console.log(`[OCR Overlay] Captured "${slotKey}", ~${sizeKB}KB`);
+        console.log(`📸 [OCR:Overlay] Captured "${slotKey}" photo (~${sizeKB}KB)`);
 
         if (sizeKB > MAX_BASE64_KB) {
           // Image is still too large even at low quality (very high-res sensor)
@@ -111,7 +111,7 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (err) {
-      console.error(`[OCR Overlay] Camera error "${slotKey}":`, err.message);
+      console.error(`📸 [OCR:Overlay] ❌ Camera error for "${slotKey}": ${err.message}`);
       Alert.alert('Camera Error', err.message);
     }
   };
@@ -150,7 +150,7 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
       // Pass both photos and the product name the user typed
       await onSubmit(photos, productName.trim());
     } catch (err) {
-      console.error('[OCR Overlay] Submit error:', err.message);
+      console.error(`📸 [OCR:Overlay] ❌ Submit error: ${err.message}`);
       Alert.alert('Error', err.message || 'Failed to process photos.');
     } finally {
       setProcessing(false);

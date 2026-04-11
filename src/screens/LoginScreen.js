@@ -7,6 +7,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getSupabaseClient } from '../services/supabase';
+import { useUser } from '../store/UserContext';
 
 // Aesthetic Colors & Metrics
 const aestheticColors = {
@@ -21,10 +22,12 @@ const aestheticColors = {
 };
 
 export default function LoginScreen({ navigation }) {
+  const { userDispatch } = useUser();
   const [isLogin, setIsLogin] = useState(true);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Return to whatever screen we came from
@@ -42,6 +45,17 @@ export default function LoginScreen({ navigation }) {
       return;
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters.');
+      return;
+    }
+
     const client = getSupabaseClient();
     if (!client) {
       Alert.alert('Error', 'Supabase is not configured.');
@@ -49,6 +63,9 @@ export default function LoginScreen({ navigation }) {
     }
 
     setLoading(true);
+    console.log(`\n🔐 ═══════════════════════════════════════════`);
+    console.log(`🔐 [Auth] ${isLogin ? 'LOGIN' : 'SIGNUP'} → email="${email}"${!isLogin ? ` | name="${fullName}"` : ''}`);
+    console.log(`🔐 ═══════════════════════════════════════════`);
     let result;
 
     if (!isLogin) {
@@ -64,8 +81,17 @@ export default function LoginScreen({ navigation }) {
     setLoading(false);
 
     if (result.error) {
+      console.error(`🔐 [Auth] ❌ FAILED: ${result.error.message}`);
       Alert.alert('Authentication Failed', result.error.message);
     } else {
+      console.log(`🔐 [Auth] ✅ SUCCESS — user authenticated as "${email}"`);
+      userDispatch({ type: 'SET_EMAIL', payload: email });
+      // Save full name so ProfileScreen can display it immediately
+      const name = result.data?.user?.user_metadata?.full_name || fullName || '';
+      if (name) {
+        console.log(`🔐 [Auth] Saving full name: "${name}"`);
+        userDispatch({ type: 'SET_FULL_NAME', payload: name });
+      }
       Alert.alert('Success', !isLogin ? 'Account created successfully!' : 'Logged in successfully.');
       navigateBack();
     }
@@ -78,8 +104,8 @@ export default function LoginScreen({ navigation }) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.topBar}>
-          <TouchableOpacity onPress={navigateBack} style={styles.backBtn}>
-            <Ionicons name="close" size={24} color={aestheticColors.primaryText} />
+          <TouchableOpacity onPress={navigateBack} style={styles.skipBtn}>
+            <Text style={styles.skipBtnText}>Skip for now</Text>
           </TouchableOpacity>
         </View>
 
@@ -119,22 +145,27 @@ export default function LoginScreen({ navigation }) {
               />
             </View>
 
-            <View style={styles.inputContainer}>
+            <View style={[styles.inputContainer, { flexDirection: 'row', alignItems: 'center' }]}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, { flex: 1 }]}
                 placeholder="Password"
                 placeholderTextColor={aestheticColors.secondaryText}
                 value={password}
                 onChangeText={setPassword}
-                secureTextEntry
+                secureTextEntry={!showPassword}
               />
-            </View>
-
-            {isLogin && (
-              <TouchableOpacity style={styles.forgotBtn}>
-                <Text style={styles.forgotText}>Forgot password?</Text>
+              <TouchableOpacity 
+                style={{ padding: 15, paddingRight: 20 }} 
+                onPress={() => setShowPassword(!showPassword)}
+                activeOpacity={0.7}
+              >
+                <Ionicons 
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'} 
+                  size={20} 
+                  color={aestheticColors.secondaryText} 
+                />
               </TouchableOpacity>
-            )}
+            </View>
 
             <TouchableOpacity style={styles.primaryBtn} onPress={handleAuth} disabled={loading}>
               {loading ? (
@@ -180,6 +211,24 @@ const styles = StyleSheet.create({
   backBtn: {
     padding: 8,
     marginLeft: -8,
+  },
+  skipBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: aestheticColors.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: aestheticColors.inputBorder,
+    shadowColor: aestheticColors.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.8,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  skipBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: aestheticColors.secondaryText,
   },
   content: {
     flex: 1,

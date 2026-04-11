@@ -7,7 +7,7 @@
 //   Ingredient Tap: 0-1 calls (cached after first)
 
 import * as gemini from './gemini';
-import { getSupabaseClient } from './supabase';
+import { getSupabaseClient, saveProduct } from './supabase';
 import { calculateMacroScore } from '../utils/thresholds';
 
 /**
@@ -25,6 +25,10 @@ export async function analyzeProduct(product, options = {}) {
     onProgress = null,
   } = options;
 
+  console.log(`\n🔬 ═══════════════════════════════════════════`);
+  console.log(`🔬 [AnalysisService] START — analyzeProduct("${product.barcode}")`);
+  console.log(`🔬 ═══════════════════════════════════════════`);
+
   let finalPayload = {
     localData: null,
     aiData: null,
@@ -34,16 +38,19 @@ export async function analyzeProduct(product, options = {}) {
 
   // ── 1. Local Processing (Always runs, zero AI) ──
   finalPayload.localData = calculateMacroScore(product.nutrition);
+  console.log(`🔬 [AnalysisService] Step 1/5 → Local macro score calculated:`, finalPayload.localData?.score ?? 'N/A');
 
   // ── SAFETY CHECK: Abort AI if no ingredients ──
   if (!product.ingredients || product.ingredients.length === 0) {
-    console.log('[AnalysisService] No ingredients found — skipping AI entirely.');
+    console.warn(`🔬 [AnalysisService] ⚠️ ABORT — No ingredients found for "${product.barcode}". Returning local-only result.`);
     return { ...finalPayload, error: 'No ingredients available for AI analysis.' };
   }
+  console.log(`🔬 [AnalysisService] Step 1/5 → ${product.ingredients.length} ingredients available for AI`);
 
-  // If Gemini is off or missing keys, return local only
+  // If Gemini is off or missing keys, return local only with an error so the UI doesn't vanish
   if (!gemini.isGeminiConfigured(options.geminiApiKey)) {
-    return finalPayload;
+    console.warn(`🔬 [AnalysisService] ⚠️ ABORT — No Gemini API key configured. Returning local-only result.`);
+    return { ...finalPayload, error: 'AI Analysis requires a Gemini API Key. Please add your key in the Profile screen.' };
   }
 
   // ── 2. Check Global AI Cache ──
@@ -51,6 +58,7 @@ export async function analyzeProduct(product, options = {}) {
   if (supabase && product.barcode) {
     try {
       onProgress?.({ step: 1, total: 2, label: 'Checking database...' });
+      console.log(`🔬 [AnalysisService] Step 2/5 → Checking Supabase AI cache for "${product.barcode}"...`);
       const { data, error } = await supabase
         .from('product_ai_data')
         .select('*')
@@ -58,7 +66,7 @@ export async function analyzeProduct(product, options = {}) {
         .single();
         
       if (!error && data && data.ai_score !== null) {
-        console.log(`[AnalysisService] Cache HIT for ${product.barcode} (0 API calls)`);
+        console.log(`🔬 [AnalysisService] Step 2/5 → ✅ CACHE HIT! Score=${data.ai_score} for "${product.barcode}" (0 API calls used)`);
         finalPayload.aiData = {
           animalContentFlag: data.animal_content_flag,
           animalContentDetails: data.animal_content_details,
@@ -68,52 +76,80 @@ export async function analyzeProduct(product, options = {}) {
         };
         finalPayload.aiPowered = true;
         finalPayload.cached = true;
+        console.log(`🔬 [AnalysisService] END — Returning cached AI result ✅\n`);
         return finalPayload;
+      } else {
+        console.log(`🔬 [AnalysisService] Step 2/5 → CACHE MISS — No AI data found, proceeding to Gemini`);
       }
     } catch (err) {
-      console.warn('[AnalysisService] Cache check failed:', err.message);
+      console.warn(`🔬 [AnalysisService] Step 2/5 → ⚠️ Cache check failed: ${err.message}`);
     }
   }
 
   // ── 3. Deliberate 2-second UX delay ──
   onProgress?.({ step: 1, total: 2, label: 'Preparing deep analysis...' });
+  console.log(`🔬 [AnalysisService] Step 3/5 → 2s UX delay (building anticipation)...`);
   await new Promise(resolve => setTimeout(resolve, 2000));
 
   // ── 4. Single Gemini Call ──
   try {
     onProgress?.({ step: 2, total: 2, label: 'Running AI analysis...' });
-    console.log(`[AnalysisService] Executing SINGLE runDeepAnalysis for ${product.barcode}`);
+    console.log(`🔬 [AnalysisService] Step 4/5 → 🤖 Calling Gemini runDeepAnalysis for "${product.barcode}" (model: ${geminiModel || 'default'})...`);
+    const startTime = Date.now();
     
     const result = await gemini.runDeepAnalysis(product, options.geminiApiKey, geminiModel);
+    const elapsed = Date.now() - startTime;
+
+    let dataObj = result;
+    if (Array.isArray(result) && result.length > 0) {
+      dataObj = result[0];
+    } else if (result?.analysis) {
+      dataObj = result.analysis;
+    }
+
+    const aiScoreVal = dataObj?.aiScore ?? dataObj?.ai_score ?? dataObj?.score ?? null;
+    console.log(`🔬 [AnalysisService] Step 4/5 → Gemini responded in ${elapsed}ms — raw score: ${aiScoreVal}`);
+    
+    // If we STILL can't find a score, the AI hallucinated the JSON structure completely.
+    if (aiScoreVal === null || aiScoreVal === undefined) {
+      console.error(`🔬 [AnalysisService] ❌ Gemini returned malformed response — no score found in response keys: [${Object.keys(dataObj || {}).join(', ')}]`);
+      throw new Error("The AI returned a malformed response. Please tap evaluate again to retry.");
+    }
 
     finalPayload.aiData = {
-      animalContentFlag: result?.animalContentFlag ?? false,
-      animalContentDetails: result?.animalContentDetails ?? null,
-      harmfulChemicals: result?.harmfulChemicals ?? [],
-      aiScore: result?.aiScore ?? null,
-      aiRecommendation: result?.aiRecommendation ?? null
+      animalContentFlag: dataObj?.animalContentFlag ?? dataObj?.animal_content_flag ?? false,
+      animalContentDetails: dataObj?.animalContentDetails ?? dataObj?.animal_content_details ?? null,
+      harmfulChemicals: dataObj?.harmfulChemicals ?? dataObj?.harmful_chemicals ?? [],
+      aiScore: aiScoreVal,
+      aiRecommendation: dataObj?.aiRecommendation ?? dataObj?.ai_recommendation ?? null
     };
     finalPayload.aiPowered = true;
+    console.log(`🔬 [AnalysisService] Step 4/5 → ✅ AI Result: score=${aiScoreVal}, animal=${finalPayload.aiData.animalContentFlag}, chemicals=${finalPayload.aiData.harmfulChemicals?.length || 0}`);
 
     // ── 5. Cache to Supabase (fire & forget) ──
     if (product.barcode && supabase && result) {
-      supabase.from('product_ai_data').upsert({
-        barcode: product.barcode,
-        animal_content_flag: result.animalContentFlag ?? false,
-        animal_content_details: result.animalContentDetails ?? null,
-        harmful_chemicals: result.harmfulChemicals ?? [],
-        ai_score: result.aiScore,
-        ai_recommendation: result.aiRecommendation,
-        gemini_model: geminiModel,
-      }, { onConflict: 'barcode' }).then(({ error }) => {
-        if (error) console.warn('[AnalysisService] Supabase cache push failed:', error.message);
-        else console.log(`[AnalysisService] Cached AI result for ${product.barcode}`);
+      console.log(`🔬 [AnalysisService] Step 5/5 → 💾 Caching AI result to Supabase for "${product.barcode}"...`);
+      // Must guarantee the base product exists globally first to satisfy foreign key constraint!
+      saveProduct(product).then(() => {
+        supabase.from('product_ai_data').upsert({
+          barcode: product.barcode,
+          animal_content_flag: finalPayload.aiData.animalContentFlag,
+          animal_content_details: finalPayload.aiData.animalContentDetails,
+          harmful_chemicals: finalPayload.aiData.harmfulChemicals,
+          ai_score: finalPayload.aiData.aiScore,
+          ai_recommendation: finalPayload.aiData.aiRecommendation,
+          gemini_model: geminiModel,
+        }, { onConflict: 'barcode' }).then(({ error }) => {
+          if (error) console.warn(`🔬 [AnalysisService] Step 5/5 → ❌ Supabase cache write FAILED: ${error.message}`);
+          else console.log(`🔬 [AnalysisService] Step 5/5 → ✅ AI result cached to Supabase for "${product.barcode}"`);
+        });
       });
     }
 
+    console.log(`🔬 [AnalysisService] END — Full AI analysis complete ✅\n`);
     return finalPayload;
   } catch (error) {
-    console.warn('[AnalysisService] AI call failed:', error.message);
+    console.error(`🔬 [AnalysisService] ❌ AI CALL FAILED: ${error.message}`);
     return { ...finalPayload, error: error.message };
   }
 }
@@ -124,34 +160,41 @@ export async function analyzeProduct(product, options = {}) {
  * Falls back to local dictionary data if no API key.
  */
 export async function analyzeIngredientDetail(ingredientName, apiKeys = null, model = null) {
+  console.log(`\n🧪 [IngredientDetail] START — Deep analysis for "${ingredientName}"`);
+
   // 1. Check Global Supabase Cache
   const { getDeepIngredientKnowledge, updateDeepIngredientKnowledge } = require('./supabase');
   const cachedInsight = await getDeepIngredientKnowledge(ingredientName);
   
   if (cachedInsight) {
-    console.log(`[DeepCache] Found rich AI knowledge for "${ingredientName}" in Supabase. (0 API Calls)`);
+    console.log(`🧪 [IngredientDetail] ✅ CACHE HIT — Found existing AI knowledge for "${ingredientName}" (0 API calls)`);
     return cachedInsight;
   }
 
   // 2. Fallback to Gemini AI if not configured/found
   if (!gemini.isGeminiConfigured(apiKeys)) {
+    console.warn(`🧪 [IngredientDetail] ⚠️ No Gemini API key — cannot analyze "${ingredientName}"`);
     return null;
   }
   
   try {
-    console.log(`[DeepCache] Missing rich AI knowledge for "${ingredientName}". Calling Gemini...`);
+    console.log(`🧪 [IngredientDetail] CACHE MISS — Calling Gemini for "${ingredientName}"...`);
+    const startTime = Date.now();
     const aiData = await gemini.analyzeIngredient(ingredientName, apiKeys, model);
+    const elapsed = Date.now() - startTime;
+    console.log(`🧪 [IngredientDetail] ✅ Gemini responded in ${elapsed}ms for "${ingredientName}"`);
     
     // 3. Save the result back to Supabase so we never call Gemini for this again
     if (aiData) {
       updateDeepIngredientKnowledge(ingredientName, aiData).then(success => {
-        if (success) console.log(`[DeepCache] Saved rich AI knowledge for "${ingredientName}" to Supabase.`);
+        if (success) console.log(`🧪 [IngredientDetail] 💾 Saved AI knowledge for "${ingredientName}" to Supabase cache`);
+        else console.warn(`🧪 [IngredientDetail] ⚠️ Failed to cache AI knowledge for "${ingredientName}"`);
       });
     }
     
     return aiData;
   } catch (e) {
-    console.warn('[AnalysisService] Ingredient detail AI failed:', e.message);
+    console.error(`🧪 [IngredientDetail] ❌ AI call FAILED for "${ingredientName}": ${e.message}`);
     return null;
   }
 }

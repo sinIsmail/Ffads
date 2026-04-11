@@ -40,7 +40,23 @@ export const HEALTH_MODES = {
   fitness: { threshold: 1.0, proteinBonus: true, sugarPenalty: true },
 };
 
-export const DIET_TYPES = ['veg', 'non-veg'];
+export const DIET_TYPES = [
+  { id: 'omnivore', label: 'Omnivore', icon: '🍖', desc: 'No restrictions' },
+  { id: 'vegetarian', label: 'Vegetarian', icon: '🥦', desc: 'No meat or fish' },
+  { id: 'vegan', label: 'Vegan', icon: '🌱', desc: 'No animal products' },
+  { id: 'halal', label: 'Halal', icon: '☪️', desc: 'Islamic dietary law' },
+  { id: 'kosher', label: 'Kosher', icon: '✡️', desc: 'Jewish dietary law' },
+];
+
+// Health conditions that tighten scoring thresholds
+export const HEALTH_CONDITIONS = [
+  { id: 'diabetes', label: 'Diabetes', icon: '💉', nutrient: 'sugar', multiplier: 1.8, desc: 'Stricter sugar limits' },
+  { id: 'hypertension', label: 'Hypertension', icon: '❤️‍🩹', nutrient: 'sodium', multiplier: 1.6, desc: 'Stricter sodium limits' },
+  { id: 'heart_disease', label: 'Heart Disease', icon: '🫀', nutrient: 'saturatedFat', multiplier: 1.5, desc: 'Stricter fat limits' },
+  { id: 'cholesterol', label: 'High Cholesterol', icon: '🩸', nutrient: 'fat', multiplier: 1.4, desc: 'Stricter fat limits' },
+  { id: 'kidney', label: 'Kidney Disease', icon: '🫘', nutrient: 'sodium', multiplier: 2.0, desc: 'Very strict sodium' },
+  { id: 'obesity', label: 'Weight Management', icon: '⚖️', nutrient: 'sugar', multiplier: 1.5, desc: 'Stricter sugar + fat' },
+];
 
 export const ALLERGEN_LIST = [
   { id: 'milk', label: 'Milk & Dairy', emoji: '🥛' },

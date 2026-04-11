@@ -50,7 +50,7 @@ export default function IngredientModal({ visible, ingredient, onClose }) {
         setAiData(null);
         analyzeIngredientDetail(ingredient.name, key, userPrefs.geminiModel)
           .then(data => setAiData(data))
-          .catch(err => console.warn('AI Ingredient fetch failed:', err))
+          .catch(err => console.warn(`🧪 [IngredientModal] ⚠️ AI fetch failed for "${ingredient.name}": ${err.message}`))
           .finally(() => setLoadingAi(false));
       }
     } else {

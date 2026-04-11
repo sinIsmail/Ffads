@@ -33,6 +33,7 @@ function reducer(state, action) {
         ? state.history.map((p) => p.barcode === product.barcode ? { ...p, ...product } : p)
         : [product, ...state.history];
 
+      console.log(`🗂️ [ProductStore] ADD_PRODUCT → "${product.name}" (${product.barcode}) | session: ${newSession.length} | history: ${newHistory.length}`);
       return { ...state, sessionScans: newSession, history: newHistory };
     }
 
@@ -40,6 +41,7 @@ function reducer(state, action) {
       const update = (list) => list.map((p) =>
         p.id === action.payload.id ? { ...p, ...action.payload } : p
       );
+      console.log(`🗂️ [ProductStore] UPDATE_PRODUCT → id="${action.payload.id}"`);
       return {
         ...state,
         sessionScans: update(state.sessionScans),
@@ -48,6 +50,7 @@ function reducer(state, action) {
     }
 
     case 'DELETE_PRODUCT':
+      console.log(`🗂️ [ProductStore] DELETE_PRODUCT → id="${action.payload}"`);
       return {
         ...state,
         sessionScans: state.sessionScans.filter((p) => p.id !== action.payload),
@@ -56,6 +59,7 @@ function reducer(state, action) {
       };
 
     case 'CLEAR_HISTORY':
+      console.log(`🗂️ [ProductStore] CLEAR_HISTORY → Wiping all session + history data`);
       return { ...state, sessionScans: [], history: [], compareSelection: [] };
 
     case 'TOGGLE_COMPARE': {
@@ -83,16 +87,21 @@ export function ProductProvider({ children }) {
   useEffect(() => {
     (async () => {
       try {
+        console.log(`🗂️ [ProductStore] INIT → Loading history from AsyncStorage...`);
         const savedVer = await AsyncStorage.getItem(DATA_VERSION_KEY);
         if (savedVer !== CURRENT_VERSION) {
+          console.warn(`🗂️ [ProductStore] ⚠️ Data version mismatch (saved: ${savedVer}, current: ${CURRENT_VERSION}) — clearing stale history`);
           await AsyncStorage.removeItem(HISTORY_KEY);
           await AsyncStorage.setItem(DATA_VERSION_KEY, CURRENT_VERSION);
           dispatch({ type: 'LOAD_HISTORY', payload: [] });
           return;
         }
         const raw = await AsyncStorage.getItem(HISTORY_KEY);
-        dispatch({ type: 'LOAD_HISTORY', payload: raw ? JSON.parse(raw) : [] });
+        const parsed = raw ? JSON.parse(raw) : [];
+        console.log(`🗂️ [ProductStore] INIT → ✅ Loaded ${parsed.length} products from local history`);
+        dispatch({ type: 'LOAD_HISTORY', payload: parsed });
       } catch {
+        console.error(`🗂️ [ProductStore] INIT → ❌ Failed to load history — starting fresh`);
         dispatch({ type: 'LOAD_HISTORY', payload: [] });
       }
     })();
@@ -101,6 +110,7 @@ export function ProductProvider({ children }) {
   // Persist history on change
   useEffect(() => {
     if (!state.loaded) return;
+    console.log(`🗂️ [ProductStore] PERSIST → Saving ${state.history.length} products to AsyncStorage...`);
     AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(state.history)).catch(() => {});
   }, [state.history, state.loaded]);
 

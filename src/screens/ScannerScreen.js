@@ -20,6 +20,8 @@ import OCRScannerOverlay from '../components/OCRScannerOverlay';
 import { scanProduct } from '../services/product.service';
 import { processProductPhotos } from '../services/gemini';
 import { saveProduct, recordScan, logUserContribution } from '../services/supabase';
+import { contributeToOFF, isOFFConfigured, getOFFCredentials } from '../services/openfoodfacts';
+import { isValidEAN13, isValidEAN8, isValidBarcode } from '../components/scanner/barcodeValidators';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SCAN_CONFIDENCE_THRESHOLD = 3; // Must read same barcode 3 times
@@ -80,43 +82,8 @@ export default function ScannerScreen({ navigation }) {
     }, duration);
   }, [toastAnim]);
 
-  // Validate EAN-13 checksum
-  const isValidEAN13 = useCallback((code) => {
-    if (code.length !== 13 || !/^\d+$/.test(code)) return false;
-    let sum = 0;
-    for (let i = 0; i < 12; i++) {
-      sum += parseInt(code[i]) * (i % 2 === 0 ? 1 : 3);
-    }
-    const check = (10 - (sum % 10)) % 10;
-    return check === parseInt(code[12]);
-  }, []);
 
-  // Validate EAN-8 checksum
-  const isValidEAN8 = useCallback((code) => {
-    if (code.length !== 8 || !/^\d+$/.test(code)) return false;
-    let sum = 0;
-    for (let i = 0; i < 7; i++) {
-      sum += parseInt(code[i]) * (i % 2 === 0 ? 3 : 1);
-    }
-    const check = (10 - (sum % 10)) % 10;
-    return check === parseInt(code[7]);
-  }, []);
 
-  // Check if barcode format is valid
-  const isValidBarcode = useCallback((code, type) => {
-    if (!code || code.length < 4) return false;
-
-    // EAN-13 validation
-    if (type === 'ean13' || code.length === 13) return isValidEAN13(code);
-    // EAN-8 validation
-    if (type === 'ean8' || code.length === 8) return isValidEAN8(code);
-    // UPC-A (12 digits) — accept if numeric
-    if (code.length === 12 && /^\d+$/.test(code)) return true;
-    // Other formats — basic check
-    if (/^[\d\w\-]+$/.test(code) && code.length >= 6) return true;
-
-    return false;
-  }, [isValidEAN13, isValidEAN8]);
 
   // Handle camera barcode detection (confidence-based)
   const handleBarcodeScanned = useCallback(({ data, type }) => {
@@ -171,10 +138,11 @@ export default function ScannerScreen({ navigation }) {
         productDispatch({ type: 'ADD_PRODUCT', payload: product });
         setBarcodeInput('');
 
-        // Persist scan history to Supabase
+        // Persist scan history to Supabase (with user identity)
+        console.log(`📷 [Scanner] Saving product "${product.name}" to Supabase + logging scan...`);
         saveProduct(product).then(r => {
-          if (r?.success) recordScan(product.barcode);
-        }).catch(e => console.warn('[Scanner] Supabase save error:', e.message));
+          if (r?.success) recordScan(product.barcode, userPrefs.email || null);
+        }).catch(e => console.error(`📷 [Scanner] ❌ Supabase save error: ${e.message}`));
 
         if (source === 'cache') {
           showToast(`📦 ${product.name} — already in history`, 'info');
@@ -185,11 +153,18 @@ export default function ScannerScreen({ navigation }) {
         }
       }
     } catch (error) {
-      showToast('❌ Lookup failed — check connection', 'error');
+      if (scanning) {
+        showToast('❌ Lookup failed — check connection', 'error');
+      }
     } finally {
       setScanning(false);
     }
-  }, [scanning, productDispatch, showToast]);
+  }, [scanning, productDispatch, showToast, userPrefs.email]);
+
+  const handleCancelScan = useCallback(() => {
+    setScanning(false);
+    showToast('Scan cancelled', 'info');
+  }, [showToast]);
 
   const handleManualScan = useCallback(() => {
     const barcode = barcodeInput.trim();
@@ -222,7 +197,9 @@ export default function ScannerScreen({ navigation }) {
   const handleOCRSubmit = async (photos, productName) => {
     try {
       const allKeys = getAllGeminiKeys(userPrefs);
-      console.log('[Scanner OCR] Keys available:', allKeys.length, '| model:', userPrefs.geminiModel);
+    console.log(`\n📷 ═══════════════════════════════════════════`);
+    console.log(`📷 [Scanner:OCR] START — ${allKeys.length} key(s) available | model: ${userPrefs.geminiModel}`);
+    console.log(`📷 ═══════════════════════════════════════════`);
 
       // Call Gemini Vision to extract data
       const ocrData = await processProductPhotos(
@@ -252,29 +229,62 @@ export default function ScannerScreen({ navigation }) {
       setPendingProduct(null);
       setBarcodeInput('');
 
-      // Persist to Supabase in background (non-blocking)
-      saveProduct(finalProduct).then(r => {
+      // Persist to Supabase and OFF in background (non-blocking)
+      saveProduct(finalProduct).then(async r => {
         if (r?.success) {
-          console.log('[Scanner] Product saved to Supabase:', finalProduct.barcode);
-          recordScan(finalProduct.barcode);
+          console.log(`📷 [Scanner:OCR] ✅ Product saved to Supabase: "${finalProduct.name}" (${finalProduct.barcode})`);
+          recordScan(finalProduct.barcode, userPrefs.email || null);
+          
+          let frontUploaded = false;
+
+          // Attempt Open Food Facts Upload invisibly in background if configured!
+          const offCreds = getOFFCredentials(userPrefs);
+          if (isOFFConfigured(offCreds)) {
+            console.log(`📷 [Scanner:OCR] OFF configured — attempting background upload to Open Food Facts...`);
+            const offPayload = {
+              barcode: finalProduct.barcode,
+              name: finalProduct.name,
+              brand: finalProduct.brand,
+              ingredientsRaw: finalProduct.ingredientsRaw,
+              nutrition: finalProduct.nutrition,
+            };
+            
+            // In ScannerScreen we only have front and back photos
+            const imagesToUpload = [
+              photos.front?.base64 || null, 
+              null, // no separate nutrition photo
+              photos.back?.base64  || null  // back photo acts as ingredients
+            ];
+
+            const offResult = await contributeToOFF(offPayload, imagesToUpload, offCreds);
+            if (offResult.success) {
+              console.log(`📷 [Scanner:OCR] ✅ Background OFF upload successful`);
+              frontUploaded = !!photos.front;
+            } else {
+              console.warn(`📷 [Scanner:OCR] ⚠️ Background OFF upload failed: ${offResult.error}`);
+            }
+          }
+
           logUserContribution({
              barcode: finalProduct.barcode,
              productName: finalProduct.name,
+             contributorEmail: userPrefs.email || null,
              rawOcr: ocrData.rawOCRText,
              filteredData: ocrData,
-             frontUploaded: false,
+             ingredients: finalProduct.ingredients || [],
+             frontUploaded: frontUploaded,
              backOcrd: true
           });
         } else if (r?.error) {
-          console.warn('[Scanner] Supabase save failed:', r.error);
+          console.warn(`📷 [Scanner:OCR] ⚠️ Supabase save failed: ${r.error}`);
         }
-      }).catch(e => console.warn('[Scanner] Supabase save error:', e.message));
+      }).catch(e => console.error(`📷 [Scanner:OCR] ❌ Supabase save error: ${e.message}`));
 
       showToast(`✨ OCR Success: ${finalProduct.name}`, 'success');
       navigation.navigate('ProductDetail', { productId: finalProduct.id });
 
     } catch (error) {
-      console.warn('OCR Error', error);
+      console.error(`📷 [Scanner:OCR] ❌ OCR FAILED: ${error.message || 'Unknown error'}`);
       showToast(`❌ OCR failed: ${error.message?.substring(0, 80) || 'Unknown error'}`, 'error');
       // Failsafe: add without OCR data so user can view/edit the product
       productDispatch({ type: 'ADD_PRODUCT', payload: pendingProduct });
@@ -315,7 +325,6 @@ export default function ScannerScreen({ navigation }) {
       {/* ── Header ── */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.greeting}>👋 Hello!</Text>
           <Text style={styles.title}>Scan a Product</Text>
         </View>
         <View style={styles.headerBadge}>
@@ -367,9 +376,10 @@ export default function ScannerScreen({ navigation }) {
             {/* Status bar */}
             <View style={styles.cameraStatusBar}>
               {scanning ? (
-                <View style={styles.statusPill}>
-                  <Text style={styles.statusText}>⏳ Looking up…</Text>
-                </View>
+                <TouchableOpacity style={styles.statusPill} onPress={handleCancelScan} activeOpacity={0.7}>
+                  <Text style={styles.statusText}>⏳ Looking up… (Tap to cancel)</Text>
+                  <Ionicons name="close-circle" size={16} color="#FFF" style={{ marginLeft: 6 }} />
+                </TouchableOpacity>
               ) : cooldownRef.current ? (
                 <View style={[styles.statusPill, { backgroundColor: 'rgba(34,197,94,0.8)' }]}>
                   <Text style={styles.statusText}>✅ Scanned! Point at next product</Text>
@@ -425,13 +435,12 @@ export default function ScannerScreen({ navigation }) {
             />
           </View>
           <TouchableOpacity
-            style={[styles.searchBtn, scanning && styles.searchBtnDisabled]}
-            onPress={handleManualScan}
-            disabled={scanning}
+            style={[styles.searchBtn, scanning && { opacity: 0.8 }]}
+            onPress={scanning ? handleCancelScan : handleManualScan}
             activeOpacity={0.8}
           >
-            <View style={[styles.searchBtnInner, scanning && { backgroundColor: '#CCC' }]}>
-              <Ionicons name={scanning ? 'hourglass' : 'search'} size={20} color="#FFF" />
+            <View style={[styles.searchBtnInner, scanning && { backgroundColor: '#EF4444' }]}>
+              <Ionicons name={scanning ? 'close' : 'search'} size={20} color="#FFF" />
             </View>
           </TouchableOpacity>
         </View>

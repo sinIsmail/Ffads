@@ -165,11 +165,13 @@ CREATE TABLE IF NOT EXISTS user_scans (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   barcode TEXT NOT NULL REFERENCES products(barcode) ON DELETE CASCADE,
   device_id TEXT REFERENCES user_profiles(device_id) ON DELETE CASCADE,
+  user_email TEXT,                -- Email of the user who scanned (set at login)
   scanned_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_scans_barcode ON user_scans(barcode);
 CREATE INDEX IF NOT EXISTS idx_user_scans_date ON user_scans(scanned_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_scans_email ON user_scans(user_email);
 
 -- ─── User Contributions ─────────────────────
 -- Tracks explicit user contributions (Upload Photos)
@@ -180,8 +182,10 @@ CREATE TABLE IF NOT EXISTS user_contributions (
   user_id UUID REFERENCES auth.users(id),
   barcode TEXT NOT NULL,
   product_name TEXT,                          -- Extracted from Gemini OCR
+  contributor_email TEXT,                     -- Email of the person who contributed
   raw_ocr_text TEXT,                          -- Raw Gemini response (for debugging)
   gemini_filtered_data JSONB,                 -- Structured { ingredients, nutrition }
+  ingredients JSONB DEFAULT '[]'::jsonb,      -- Array of ingredient strings for display
   front_photo_uploaded BOOLEAN DEFAULT FALSE, -- Was front photo sent to OFF?
   back_photo_ocrd BOOLEAN DEFAULT FALSE,      -- Was back photo scanned by Gemini?
   image_urls JSONB DEFAULT '[]'::jsonb,       -- Legacy: keep for compat
@@ -191,6 +195,30 @@ CREATE TABLE IF NOT EXISTS user_contributions (
 
 CREATE INDEX IF NOT EXISTS idx_user_contributions_user ON user_contributions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_contributions_barcode ON user_contributions(barcode);
+
+-- ─── Row Level Security (RLS) for Contributions ────────────────
+ALTER TABLE user_contributions ENABLE ROW LEVEL SECURITY;
+
+-- Allow users to read ONLY their own contributions (or nothing if guest)
+CREATE POLICY "Users can view own contributions"
+ON user_contributions FOR SELECT
+USING (auth.email() = contributor_email);
+
+-- Allow authenticated users to insert contributions matching their email
+CREATE POLICY "Users can insert own contributions"
+ON user_contributions FOR INSERT
+WITH CHECK (auth.email() = contributor_email);
+
+-- Allow users to update their own contributions
+CREATE POLICY "Users can update own contributions"
+ON user_contributions FOR UPDATE
+USING (auth.email() = contributor_email)
+WITH CHECK (auth.email() = contributor_email);
+
+-- Allow users to delete their own contributions
+CREATE POLICY "Users can delete own contributions"
+ON user_contributions FOR DELETE
+USING (auth.email() = contributor_email);
 
 -- ─── Offline Sync Queue ─────────────────────
 CREATE TABLE IF NOT EXISTS sync_queue (
@@ -245,7 +273,7 @@ CREATE POLICY "anon_all" ON product_images FOR ALL USING (true) WITH CHECK (true
 CREATE POLICY "anon_all" ON ingredient_dictionary FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "anon_all" ON user_scans FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "anon_all" ON user_profiles FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON user_contributions FOR ALL USING (true) WITH CHECK (true);
+-- user_contributions has specific strict RLS policies defined above (do not use anon_all)
 CREATE POLICY "anon_all" ON sync_queue FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "anon_all" ON ingredients_knowledge FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "anon_all" ON threshold_limits FOR ALL USING (true) WITH CHECK (true);
@@ -263,3 +291,4 @@ CREATE POLICY "anon_all" ON threshold_limits FOR ALL USING (true) WITH CHECK (tr
 --   sync_queue          — offline job queue
 --   ingredients_knowledge — Dynamic global cache backed by AI
 -- ============================================
+-- hihkhjbhbjkbnmhbjh,

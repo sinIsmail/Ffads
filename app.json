@@ -1,12 +1,11 @@
 {
   "expo": {
-    "name": "kumar",
-    "slug": "kumar",
+    "name": "Ffadz",
+    "slug": "Ffadz",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -20,7 +19,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "package": "com.ismail345.Ffads"
     },
     "web": {
@@ -28,8 +26,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "f4c1c205-edb9-4eac-8444-d0c6b1e11618"
+        "projectId": "40624838-8987-4011-b744-aafe97b361f3"
       }
-    }
+    },
+    "owner": "ismail345"
   }
 }

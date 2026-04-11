@@ -4,19 +4,40 @@ import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { colors } from '../theme/colors';
 import { typography } from '../theme/typography';
 import { spacing, borderRadius, shadows } from '../theme/spacing';
-import { calculateScore, getScoreColor, getVerdict } from '../utils/scoring';
+import { calculateScore, getScoreColor } from '../utils/scoring';
 import { classifyIngredients } from '../utils/ingredientDictionary';
 
 export default function AICardPreview({ product, onPress }) {
+  const [dynamicImage, setDynamicImage] = React.useState(null);
+
+  React.useEffect(() => {
+    let isMounted = true;
+    if (!product.images?.front && !product.frontPhotoBase64 && product.barcode) {
+      // Background fetch thumbnail if it was dropped from memory during Supabase caching
+      fetch(`https://world.openfoodfacts.org/api/v2/product/${product.barcode}?fields=image_front_url`)
+        .then(res => res.json())
+        .then(json => {
+          if (isMounted && json.status === 1 && json.product?.image_front_url) {
+            setDynamicImage(json.product.image_front_url);
+          }
+        })
+        .catch(() => {});
+    }
+    return () => { isMounted = false; };
+  }, [product.barcode, product.images, product.frontPhotoBase64]);
+
   const classified = classifyIngredients(product.ingredients || []);
   const { score } = calculateScore({
     nutrition: product.nutrition,
     classifiedIngredients: classified,
   });
   const scoreColor = getScoreColor(score);
-  const verdict = getVerdict(score);
 
   const timeAgo = getTimeAgo(product.scannedAt);
+
+  const displayImage = product.images?.front 
+    || dynamicImage 
+    || (product.frontPhotoBase64 ? `data:image/jpeg;base64,${product.frontPhotoBase64}` : null);
 
   return (
     <TouchableOpacity
@@ -26,8 +47,8 @@ export default function AICardPreview({ product, onPress }) {
     >
       {/* Left: Product image or placeholder */}
       <View style={[styles.imageContainer, { borderColor: scoreColor + '30' }]}>
-        {product.images?.front ? (
-          <Image source={{ uri: product.images.front }} style={styles.image} />
+        {displayImage ? (
+          <Image source={{ uri: displayImage }} style={styles.image} />
         ) : (
           <Text style={styles.placeholder}>📦</Text>
         )}
@@ -38,10 +59,6 @@ export default function AICardPreview({ product, onPress }) {
         <Text style={styles.name} numberOfLines={1}>{product.name}</Text>
         <Text style={styles.brand} numberOfLines={1}>{product.brand}</Text>
         <View style={styles.metaRow}>
-          <View style={[styles.verdictPill, { backgroundColor: verdict.color + '15' }]}>
-            <Text style={{ fontSize: 10 }}>{verdict.emoji}</Text>
-            <Text style={[styles.verdictText, { color: verdict.color }]}>{verdict.label}</Text>
-          </View>
           <Text style={styles.time}>{timeAgo}</Text>
         </View>
       </View>

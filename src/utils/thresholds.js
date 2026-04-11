@@ -20,6 +20,7 @@ export async function syncThresholds() {
   if (!client) return;
 
   try {
+    console.log(`⚖️ [Thresholds] SYNC → Fetching latest WHO/FSSAI limits from Supabase...`);
     const { data, error } = await client.from('threshold_limits').select('*');
     if (!error && data && data.length > 0) {
       data.forEach((row) => {
@@ -32,10 +33,12 @@ export async function syncThresholds() {
         }
       });
       loadedFromDB = true;
-      console.log('[Thresholds] Synced latest WHO/FSSAI macro limits from cloud.');
+      console.log(`⚖️ [Thresholds] SYNC → ✅ Synced ${data.length} threshold(s) from cloud`);
+    } else {
+      console.log(`⚖️ [Thresholds] SYNC → Using offline defaults (no cloud data)`);
     }
   } catch (e) {
-    console.warn('[Thresholds] Failed to sync limits, relying on offline defaults.', e.message);
+    console.warn(`⚖️ [Thresholds] SYNC → ⚠️ Failed: ${e.message} — using offline defaults`);
   }
 }
 

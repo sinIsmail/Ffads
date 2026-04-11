@@ -1,5 +1,5 @@
 // Ffads — Health Scoring Engine
-import { WHO_THRESHOLDS, SCORING_WEIGHTS, HEALTH_MODES } from './constants';
+import { WHO_THRESHOLDS, SCORING_WEIGHTS, HEALTH_MODES, HEALTH_CONDITIONS } from './constants';
 
 /**
  * Calculate a health score 0–100 for a product
@@ -8,9 +8,10 @@ import { WHO_THRESHOLDS, SCORING_WEIGHTS, HEALTH_MODES } from './constants';
  * @param {Array} params.classifiedIngredients - ingredients with color/flags from dictionary
  * @param {Array} params.allergenWarnings - output from checkAllergens
  * @param {string} params.healthMode - 'relaxed' | 'strict' | 'fitness'
+ * @param {string[]} params.healthConditions - ['diabetes', 'hypertension', ...] from user prefs
  * @returns {{ score, grade, color, deductions, bonuses }}
  */
-export function calculateScore({ nutrition = {}, classifiedIngredients = [], allergenWarnings = [], healthMode = 'relaxed' }) {
+export function calculateScore({ nutrition = {}, classifiedIngredients = [], allergenWarnings = [], healthMode = 'relaxed', healthConditions = [] }) {
   // 1. MACRO SCORE LOGIC (Continuous Interpolation)
   let macroScore = 100;
   const deductions = [];
@@ -19,26 +20,41 @@ export function calculateScore({ nutrition = {}, classifiedIngredients = [], all
 
   const penaltyMultiplier = mode.sugarPenalty ? 1.3 : 1;
 
+  // Build condition-based multipliers per nutrient
+  // e.g. if user has diabetes → sugar penalty is 1.8x harsher
+  const conditionMultipliers = { sugar: 1, fat: 1, saturatedFat: 1, sodium: 1 };
+  for (const cid of healthConditions) {
+    const cond = HEALTH_CONDITIONS.find(c => c.id === cid);
+    if (cond && conditionMultipliers[cond.nutrient] !== undefined) {
+      conditionMultipliers[cond.nutrient] = Math.max(conditionMultipliers[cond.nutrient], cond.multiplier);
+    }
+    // obesity affects both sugar and fat
+    if (cid === 'obesity') {
+      conditionMultipliers.fat = Math.max(conditionMultipliers.fat, 1.3);
+    }
+  }
+
   // Helper for continuous deduction
-  const applyDeduction = (name, amount, threshold, maxWeight, unit) => {
+  const applyDeduction = (name, amount, threshold, maxWeight, unit, nutrientKey) => {
+    // Apply condition-based multiplier to the penalty
+    const condMul = conditionMultipliers[nutrientKey] || 1;
     if (amount != null && amount > threshold) {
-      // Linear interpolation: (amount / threshold) * maxWeight
-      // Cap at maxWeight * 1.5 to avoid highly negative infinite loops
-      let d = (amount / threshold) * maxWeight;
-      d = Math.min(d, maxWeight * 1.5);
+      let d = (amount / threshold) * maxWeight * condMul;
+      d = Math.min(d, maxWeight * 2); // cap slightly higher for condition-based
       macroScore -= d;
+      const condNote = condMul > 1 ? ` (${condMul}x due to health condition)` : '';
       deductions.push({
-        reason: `Excess ${name}`,
+        reason: `Excess ${name}${condNote}`,
         amount: Math.round(d),
         detail: `${amount}${unit} per 100g`
       });
     }
   };
 
-  applyDeduction('Sugar', nutrition.sugar, WHO_THRESHOLDS.sugar.high, SCORING_WEIGHTS.sugar * penaltyMultiplier, 'g');
-  applyDeduction('Fat', nutrition.fat, WHO_THRESHOLDS.fat.high, SCORING_WEIGHTS.fat, 'g');
-  applyDeduction('Saturated Fat', nutrition.saturatedFat, WHO_THRESHOLDS.saturatedFat.high, SCORING_WEIGHTS.saturatedFat, 'g');
-  applyDeduction('Sodium', nutrition.sodium, WHO_THRESHOLDS.sodium.high, SCORING_WEIGHTS.sodium, 'mg');
+  applyDeduction('Sugar', nutrition.sugar, WHO_THRESHOLDS.sugar.high, SCORING_WEIGHTS.sugar * penaltyMultiplier, 'g', 'sugar');
+  applyDeduction('Fat', nutrition.fat, WHO_THRESHOLDS.fat.high, SCORING_WEIGHTS.fat, 'g', 'fat');
+  applyDeduction('Saturated Fat', nutrition.saturatedFat, WHO_THRESHOLDS.saturatedFat.high, SCORING_WEIGHTS.saturatedFat, 'g', 'saturatedFat');
+  applyDeduction('Sodium', nutrition.sodium, WHO_THRESHOLDS.sodium.high, SCORING_WEIGHTS.sodium, 'mg', 'sodium');
 
   // Apply Rayner Model "Health-Washing" Cap
   const totalDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);

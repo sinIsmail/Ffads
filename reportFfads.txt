@@ -1,0 +1,133 @@
+=========================================================
+FFADS APP - COMPREHENSIVE ARCHITECTURE & DATABASE REPORT
+=========================================================
+
+This document represents a 3-phase technical audit for the Ffads Food Scanner application, as requested. It covers architectural breakdown, database wiring, management strategies, and a function audit.
+
+
+=========================================================
+PHASE 1: FILE ARCHITECTURE & WORKFLOW (DEEP DIVE)
+=========================================================
+
+1. Root Configuration Files
+---------------------------
+• package.json: Contains all project dependencies (e.g., @supabase/supabase-js, expo, react-navigation) and run scripts.
+• .env: Contains environment variables critical for connection, including EXPO_PUBLIC_SUPABASE_URL, EXPO_PUBLIC_SUPABASE_ANON_KEY, Gemini Keys, and Open Food Facts API credentials. 
+• App.js / App.json: The React Native entry points. They load context providers and initialize the main navigation stack.
+
+2. Source Directory Breakdown (src/)
+------------------------------------
+To provide extensive depth, the `src/` modular architecture is broken down into 5 distinct, detailed parts:
+
+PART 1: The Core Services Layer (src/services/)
+This layer acts as the application's engine, handling external APIs, database connections, and AI logic.
+- `supabase.js`: The central database client. Handles direct database reads, writes, and ping tests.
+  Functions: `setSupabaseCredentials`, `saveProduct`, `getCompleteProduct`.
+- `product.service.js`: The primary data router. When a barcode is scanned, this service determines whether to fetch from Supabase, Open Food Facts, or fallback to OCR.
+- `analysis.service.js`: Manages the AI request pipeline. It formats payload requests before sending them to Gemini.
+- `gemini.js`: Handles direct communication with Google's Gemini Models (1.5 Pro/Flash). Parses AI responses into JSON.
+- `openfoodfacts.js`: Connects to the external Open Food Facts V2 API to pull initial barcode data.
+- `ingredientCache.js`: Local / DB caching mechanism to avoid repeatedly querying APIs for common ingredients.
+- `ocr.js` & `queue.js`: Handles text extraction from images and job queuing for heavy AI queries.
+
+PART 2: Data Store & State Management (src/store/)
+These files use React Context to persist global UI states across entirely different screens without prop-drilling.
+- `ProductContext.js`: Maintains the current list of recently scanned products directly in memory.
+  Functions: `ProductProvider`, `useProduct`, `addProduct`, `removeProduct`.
+- `UserContext.js`: Stores user preferences (allergies, selected AI models, offline modes). Syncs memory state with `saveUserProfile()` in Supabase.
+- `AppProvider.js`: A master provider file that elegantly wraps the entire application with `ProductProvider` and `UserProvider`.
+
+PART 3: User Interface Component Modules (src/components/ & src/theme/)
+Reusable, pure UI elements that receive data and render the visuals.
+- `theme/ (colors.js, spacing.js, typography.js)`: The universal design tokens keeping paddings and brand colors consistent.
+- `AICard.js` / `AICardPreview.js`: Displays AI-generated insights, managing local states for 'loading', 'success', or 'error' views related to Gemini.
+- `NutritionTable.js`: Safely maps nutritional objects into formatted rows with dynamic macros highlighting.
+- `IngredientModal.js` / `IngredientChip.js`: Interactive components allowing a user to tap an ingredient and immediately see its details.
+- `OCRScannerOverlay.js`: A glassmorphic Apple-inspired UI overlay that triggers if the barcode lookup fails, guiding the user to take a photo.
+
+PART 4: Navigation & Screen Workflow (src/navigation/ & src/screens/)
+The workflow controllers that dictate what the user sees based on their session logic.
+- `navigation/AppNavigator.js`: The central router using `@react-navigation/bottom-tabs`. Defines the floating tab bar layout.
+- `ScannerScreen.js`: The default landing screen. Activates the device camera and handles live `handleBarCodeScanned` events.
+- `ProductDetailScreen.js`: Triggered upon scanning. Pulls specific barcode data, mounts the `AICard`, and tracks scroll views.
+- `CompareScreen.js`: Allows side-by-side selection of two products from the `ProductContext` history.
+- `ProfileScreen.js`: An interactive dashboard where users input `.env` credentials dynamically and customize their AI health modes.
+
+PART 5: Business Logic & Utilities (src/utils/)
+Dry data and mathematical logic separated from the component files to keep them clean.
+- `scoring.js`: Contains pure algorithms like `calculateNutriScore()` and `calculateNovaGroup()` to give standardized ratings offline based on raw numerical macros.
+- `allergens.js`: A master list/dictionary of common allergens mapped to scientific names used for safety highlighting.
+- `ingredientDictionary.js`: A localized database of hundreds of additive names to serve as a fast baseline before reaching out to the heavy Gemini AI.
+- `thresholds.js`: Configures the upper and lower mathematical limits for sodium, sugar, and fat color-coding (red/yellow/green).
+
+
+=========================================================
+PHASE 2: DATABASE CONNECTIVITY REPORT (SUPABASE WIRING)
+=========================================================
+
+How the Code is Wired Up (The Database Pipeline):
+The app utilizes a centralized API-layer architecture. Components DO NOT call Supabase directly. They call `product.service.js` or `analysis.service.js`, which then call `supabase.js`.
+
+Files Connected to the Database:
+1. `src/services/supabase.js` (The Core Engine)
+2. `src/services/product.service.js` (The Middleman)
+3. `src/services/analysis.service.js` (The Insights Middleman)
+
+Code Example of DB Wiring (from src/services/supabase.js):
+
+import { createClient } from '@supabase/supabase-js';
+
+// 1. Initialization block. Wired via the .env configuration.
+export function setSupabaseCredentials(url, key) { ... }
+function getClient() { ... }
+export function isConfigured() { return getClient() !== null; }
+export async function pingSupabase() { ... }
+
+// 2. Data Write Functions
+export async function saveProduct(product) {
+  const { data, error } = await client.from('products').upsert({
+    barcode: product.barcode, name: product.name, etc...
+  }, { onConflict: 'barcode' })
+}
+export async function saveProductAIData(barcode, aiData, model, mode) { ... } // Saves to product_ai_data
+export async function saveUserProfile(deviceId, prefs) { ... } // Saves to user_profiles
+
+// 3. Data Read Functions
+export async function getCompleteProduct(barcode) {
+  // Wires 'products' and 'product_ai_data' together
+}
+export async function getDeepIngredientKnowledge(name) { ... } // Reads from ingredients_knowledge
+
+// 4. Trace & Logging
+export async function recordScan(barcode) { ... } // Saves to user_scans
+export async function logUserContribution(payload) { ... } // Saves to user_contributions
+
+
+=========================================================
+PHASE 3: MANAGEMENT, CONTROL, AND FUNCTION AUDIT
+=========================================================
+
+How to Control and Manage the App:
+1. Database Control: Managed exclusively through `ProfileScreen.js` via the "API" tab (which calls `setSupabaseCredentials()` in `supabase.js`) or via the `.env` file directly. You manage schemas externally through `supabase_schema.sql` via Supabase Studio.
+2. AI Control: Swapping models (Gemini 1.5 Flash vs Pro) is controlled by `UserContext` state variables passed down to `gemini.js`.
+3. Fallback Control: The `product.service.js` serves as the router. If Supabase fails, it routes to `openfoodfacts.js`. If that fails, it routes to `ocr.js` + `gemini.js`.
+
+Dead Code & Unnecessary Functions Analysis:
+Below is a function audit of items that are potentially unnecessary or vestigial based on modern standards:
+
+1. `recordScan(barcode)` in supabase.js
+   - Status: Unneeded.
+   - Reason: You already save timestamps inside `products.scanned_at` and retrieve it using `getProducts()`. A separate `user_scans` table is redundant unless building heavy analytics.
+
+2. Direct calls to `pingSupabase()` locally
+   - Status: High overhead if called frequently.
+   - Recommendation: Only run on the `ProfileScreen` when credentials are actively changed.
+
+3. Redundant Local State in `ProductContext.js`
+   - If the app is deeply wired to Supabase using `useFocusEffect` (React Query equivalent manually implemented), keeping massive arrays in memory inside `ProductContext` duplicates data and could cause sync issues between DB and UI states.
+
+4. `cloudinary.js`
+   - Status: Deprecated workflow. 
+   - Reason: The current workflow bypasses local DB images and routes directly to Open Food Facts API standard payloads. The `cloudinary.js` file is likely dead code and can be removed safely to reduce the bundle size.
+
+END OF REPORT.

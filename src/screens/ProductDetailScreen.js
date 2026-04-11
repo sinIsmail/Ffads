@@ -50,6 +50,7 @@ export default function ProductDetailScreen({ route, navigation }) {
   const [macroModalVisible, setMacroModalVisible] = useState(false);
   const [aiModalVisible, setAiModalVisible] = useState(false);
   const [insightExpanded, setInsightExpanded] = useState(false);
+  const [aiCardDismissed, setAiCardDismissed] = useState(false);
   const [offImages, setOffImages] = useState([]);
 
   // Fetch Open Food Facts Images Directly on Mount
@@ -75,10 +76,17 @@ export default function ProductDetailScreen({ route, navigation }) {
     return () => { isMounted = false; };
   }, [product?.barcode]);
 
-  // Open OCR overlay — no login required, OFF credentials are in .env
+  // Open OCR overlay — only allowed for users with an email
   const handleContribute = useCallback(() => {
+    if (!userPrefs.email) {
+      Alert.alert(
+        'Sign In Required',
+        'Only registered users can contribute new product photos or run AI OCR.\n\nPlease go to your Profile and sign in with Supabase.'
+      );
+      return;
+    }
     setOcrVisible(true);
-  }, []);
+  }, [userPrefs.email]);
 
   // Handle photos from OCR overlay
   // photos = { front, ingredients, nutrition } — each is { uri, base64 } | null
@@ -240,8 +248,10 @@ export default function ProductDetailScreen({ route, navigation }) {
           logUserContribution({
             barcode: product.barcode,
             productName: productName || ocrData?.name || product.name,
+            contributorEmail: userPrefs.email || null,
             rawOcr: ocrData?.rawOCRText || null,
             filteredData: ocrData || null,
+            ingredients: product.ingredients || ocrData?.ingredients || [],
             frontUploaded: imgCount > 0,
             backOcrd: !!ocrData
           });
@@ -262,6 +272,19 @@ export default function ProductDetailScreen({ route, navigation }) {
         }
       } else {
         // No OFF credentials — just show what OCR found
+        
+        // Log contribution locally even if OFF is skipped
+        logUserContribution({
+          barcode: product.barcode,
+          productName: productName || ocrData?.name || product.name,
+          contributorEmail: userPrefs.email || null,
+          rawOcr: ocrData?.rawOCRText || null,
+          filteredData: ocrData || null,
+          ingredients: product.ingredients || ocrData?.ingredients || [],
+          frontUploaded: false,
+          backOcrd: !!ocrData
+        });
+
         Alert.alert(
           ocrData ? '✅ Extraction Complete' : 'No Photos Processed',
           ocrData
@@ -313,8 +336,9 @@ export default function ProductDetailScreen({ route, navigation }) {
       classifiedIngredients: classified,
       allergenWarnings,
       healthMode: userPrefs.healthMode,
+      healthConditions: userPrefs.healthConditions || [],
     }),
-    [product?.nutrition, classified, allergenWarnings, userPrefs.healthMode]
+    [product?.nutrition, classified, allergenWarnings, userPrefs.healthMode, userPrefs.healthConditions]
   );
 
   // New FSSAI/WHO Local Macro Math (Zero AI)
@@ -339,8 +363,9 @@ export default function ProductDetailScreen({ route, navigation }) {
   const handleAnalyzeClick = useCallback(async () => {
     if (!product || analyzing) return;
     
-    // If already analyzed, do nothing (AICard is already showing)
-    if (product.analyzed && (analysisResult?.aiData || product.aiData)) return;
+    // If already deeply analyzed with valid score, do nothing
+    const currentScore = analysisResult?.aiData?.aiScore ?? product.aiData?.aiScore;
+    if (product.analyzed && currentScore !== null && currentScore !== undefined) return;
 
     setAnalyzing(true);
     try {
@@ -389,6 +414,9 @@ export default function ProductDetailScreen({ route, navigation }) {
   const greenIngredients = classified.filter((i) => i.color === 'green');
 
   const displayInsight = analysisResult?.aiInsight || product.aiInsight;
+  
+  const activeAiScore = analysisResult?.aiData?.aiScore ?? product?.aiData?.aiScore;
+  const isAiDataValid = activeAiScore !== null && activeAiScore !== undefined;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -507,13 +535,14 @@ export default function ProductDetailScreen({ route, navigation }) {
           )}
         </View>
 
-        {/* ═══ Deep AI Analysis Card (3-State: Idle Button → Loading → Results) ═══ */}
+        {/* ═══ Deep AI Analysis Card — always collapsed, tap to open ═══ */}
         <AICard
-          isIdle={!product.analyzed && !analysisResult?.aiData && !product.aiData && !analyzing}
+          isIdle={!isAiDataValid && !analyzing}
           isLoading={analyzing}
           hasIngredients={hasIngredients}
           progressText={aiProgress}
           onAnalyze={handleAnalyzeClick}
+          onClose={() => {}}
           animalContentFlag={analysisResult?.aiData?.animalContentFlag ?? product.aiData?.animalContentFlag}
           animalContentDetails={analysisResult?.aiData?.animalContentDetails ?? product.aiData?.animalContentDetails}
           harmfulChemicals={analysisResult?.aiData?.harmfulChemicals ?? product.aiData?.harmfulChemicals}

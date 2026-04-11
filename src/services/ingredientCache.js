@@ -47,6 +47,10 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
 
   if (cleanedNames.length === 0) return [];
 
+  console.log(`\n🧪 ═══════════════════════════════════════════`);
+  console.log(`🧪 [IngredientCache] START — Evaluating ${cleanedNames.length} ingredients`);
+  console.log(`🧪 ═══════════════════════════════════════════`);
+
   // ── Tier 1: Local dictionary ────────────────────────────────────────────────
   // Known ingredients (sugar, palm oil, etc.) are colored immediately with no network.
   const results        = [];
@@ -70,7 +74,12 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
     }
   }
 
-  if (needsNetwork.length === 0) return results;
+  console.log(`🧪 [IngredientCache] Tier 1 (Local Dict) → ${results.length} resolved instantly, ${needsNetwork.length} need network`);
+
+  if (needsNetwork.length === 0) {
+    console.log(`🧪 [IngredientCache] END — All ingredients resolved from local dictionary ✅\n`);
+    return results;
+  }
 
   // ── Tier 2: Supabase cache ─────────────────────────────────────────────────
   const supabase = getSupabaseClient();
@@ -79,13 +88,14 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
 
   if (supabase) {
     try {
+      console.log(`🧪 [IngredientCache] Tier 2 (Supabase) → Checking cache for ${needsNetwork.length} ingredients...`);
       const { data, error } = await supabase
         .from('ingredients_knowledge')
         .select('name, health_risk_score, processing_level, is_vegan, ai_justification')
         .in('name', needsNetwork);
 
       if (error) {
-        console.warn('[Cache] Supabase fetch error:', error.message);
+        console.warn(`🧪 [IngredientCache] Tier 2 → ⚠️ Supabase fetch error: ${error.message}`);
       } else if (data?.length > 0) {
         // Compute color from stored scores — color is NOT a DB column
         cachedIngredients = data.map(ing => ({
@@ -94,9 +104,12 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
         }));
         const cachedNames = cachedIngredients.map(i => i.name);
         stillMissing = needsNetwork.filter(n => !cachedNames.includes(n));
+        console.log(`🧪 [IngredientCache] Tier 2 → ✅ ${cachedIngredients.length} found in Supabase cache, ${stillMissing.length} still missing`);
+      } else {
+        console.log(`🧪 [IngredientCache] Tier 2 → MISS — None found in Supabase cache`);
       }
     } catch (e) {
-      console.warn('[Cache] Network error connecting to Supabase:', e.message);
+      console.warn(`🧪 [IngredientCache] Tier 2 → ⚠️ Network error: ${e.message}`);
     }
   }
 
@@ -106,7 +119,7 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
   if (stillMissing.length > 0) {
     // Apply total cap
     if (stillMissing.length > MAX_TOTAL_EVAL) {
-      console.warn(`[Cache] Capping AI at ${MAX_TOTAL_EVAL}/${stillMissing.length} unknowns.`);
+      console.warn(`🧪 [IngredientCache] Tier 3 → ⚠️ Capping AI evaluation at ${MAX_TOTAL_EVAL}/${stillMissing.length} unknowns`);
       stillMissing = stillMissing.slice(0, MAX_TOTAL_EVAL);
     }
 
@@ -115,18 +128,18 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
       chunks.push(stillMissing.slice(i, i + MAX_BATCH_SIZE));
     }
 
-    console.log(
-      `[Cache] AI Fallback: ${stillMissing.length} unknowns → ${chunks.length} batch(es)`
-    );
+    console.log(`🧪 [IngredientCache] Tier 3 (Gemini AI) → ${stillMissing.length} unknowns → ${chunks.length} batch(es)`);
 
     for (let ci = 0; ci < chunks.length; ci++) {
       if (ci > 0) await delay(BATCH_DELAY_MS);
 
       const chunk = chunks[ci];
-      console.log(`[Cache] Batch ${ci + 1}/${chunks.length}: evaluating [${chunk.join(', ')}]`);
+      console.log(`🧪 [IngredientCache] Tier 3 → Batch ${ci + 1}/${chunks.length}: [${chunk.slice(0, 5).join(', ')}${chunk.length > 5 ? '...' : ''}]`);
 
       try {
+        const startTime = Date.now();
         const raw = await evaluateIngredientsForCache(chunk, apiKeys);
+        const elapsed = Date.now() - startTime;
         const batchResult = Array.isArray(raw) ? raw : [];
 
         // Add color via formula — DO NOT include color when saving to DB
@@ -136,6 +149,7 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
         }));
 
         newlyEvaluated = [...newlyEvaluated, ...colorized];
+        console.log(`🧪 [IngredientCache] Tier 3 → ✅ Batch ${ci + 1} evaluated ${colorized.length} ingredients in ${elapsed}ms`);
 
         // Persist to Supabase — strip the computed `color` field (not a DB column)
         if (supabase && colorized.length > 0) {
@@ -144,12 +158,12 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
             .from('ingredients_knowledge')
             .insert(toInsert)
             .then(({ error }) => {
-              if (error) console.warn(`[Cache] Batch ${ci + 1} save error:`, error.message);
-              else console.log(`[Cache] Cached ${toInsert.length} ingredients (batch ${ci + 1}).`);
+              if (error) console.warn(`🧪 [IngredientCache] Tier 3 → ⚠️ Batch ${ci + 1} Supabase save error: ${error.message}`);
+              else console.log(`🧪 [IngredientCache] Tier 3 → 💾 Cached ${toInsert.length} ingredients to Supabase`);
             });
         }
       } catch (e) {
-        console.error(`[Cache] Batch ${ci + 1} AI Fallback Failed:`, e.message);
+        console.error(`🧪 [IngredientCache] Tier 3 → ❌ Batch ${ci + 1} FAILED: ${e.message} — defaulting to yellow`);
         // Yellow defaults for this chunk only
         const fallback = chunk.map(name => ({
           name,
@@ -165,5 +179,7 @@ export async function getAndEvaluateIngredients(ingredientNames, apiKeys = null)
   }
 
   // Merge all tiers
-  return [...results, ...cachedIngredients, ...newlyEvaluated];
+  const total = [...results, ...cachedIngredients, ...newlyEvaluated];
+  console.log(`🧪 [IngredientCache] END — ${total.length} total (dict: ${results.length}, cached: ${cachedIngredients.length}, AI: ${newlyEvaluated.length}) ✅\n`);
+  return total;
 }
