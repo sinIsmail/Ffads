@@ -20,8 +20,9 @@ import OCRScannerOverlay from '../components/OCRScannerOverlay';
 import { scanProduct } from '../services/product.service';
 import { processProductPhotos } from '../services/gemini';
 import { saveProduct, recordScan, logUserContribution } from '../services/supabase';
-import { contributeToOFF, isOFFConfigured, getOFFCredentials } from '../services/openfoodfacts';
-import { isValidEAN13, isValidEAN8, isValidBarcode } from '../components/scanner/barcodeValidators';
+import { getOFFCredentials, isOFFConfigured, contributeToOFF } from '../services/openfoodfacts';
+import { isValidBarcode, isValidEAN8, isValidEAN13 } from '../components/scanner/barcodeValidators';
+import { logError, logEvent } from '../services/telemetry';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SCAN_CONFIDENCE_THRESHOLD = 3; // Must read same barcode 3 times
@@ -138,11 +139,21 @@ export default function ScannerScreen({ navigation }) {
         productDispatch({ type: 'ADD_PRODUCT', payload: product });
         setBarcodeInput('');
 
-        // Persist scan history to Supabase (with user identity)
+        // Persist scan history to Supabase (non-blocking background task)
         console.log(`📷 [Scanner] Saving product "${product.name}" to Supabase + logging scan...`);
-        saveProduct(product).then(r => {
-          if (r?.success) recordScan(product.barcode, userPrefs.email || null);
-        }).catch(e => console.error(`📷 [Scanner] ❌ Supabase save error: ${e.message}`));
+        (async () => {
+          try {
+            const r = await saveProduct(product);
+            if (r?.success) {
+              // recordScan has FK on products(barcode) so must run after saveProduct succeeds
+              await recordScan(product.barcode, userPrefs.email || null);
+            } else {
+              logError('Scanner saveProduct Error (Partial Failure)', r?.error || 'unknown', { barcode: product.barcode });
+            }
+          } catch (e) {
+            logError('Scanner Supabase Background Save', e, { barcode: product.barcode });
+          }
+        })();
 
         if (source === 'cache') {
           showToast(`📦 ${product.name} — already in history`, 'info');
@@ -276,17 +287,18 @@ export default function ScannerScreen({ navigation }) {
              backOcrd: true
           });
         } else if (r?.error) {
-          console.warn(`📷 [Scanner:OCR] ⚠️ Supabase save failed: ${r.error}`);
+          logError('Scanner OCR Supabase Save', r.error, { barcode: finalProduct.barcode });
         }
-      }).catch(e => console.error(`📷 [Scanner:OCR] ❌ Supabase save error: ${e.message}`));
+      }).catch(e => logError('Scanner OCR Async Chain', e, { barcode: finalProduct.barcode }));
 
       showToast(`✨ OCR Success: ${finalProduct.name}`, 'success');
+      logEvent('Product_OCR_Scanned', { barcode: finalProduct.barcode });
       navigation.navigate('ProductDetail', { productId: finalProduct.id });
 
     } catch (error) {
-      console.error(`📷 [Scanner:OCR] ❌ OCR FAILED: ${error.message || 'Unknown error'}`);
+      logError('Scanner Main OCR Flow', error, { originalName: pendingProduct?.name });
       showToast(`❌ OCR failed: ${error.message?.substring(0, 80) || 'Unknown error'}`, 'error');
-      // Failsafe: add without OCR data so user can view/edit the product
+      // Failsafe (Partial Failure): add without OCR data so user can view/edit the product
       productDispatch({ type: 'ADD_PRODUCT', payload: pendingProduct });
       setOcrVisible(false);
       setPendingProduct(null);

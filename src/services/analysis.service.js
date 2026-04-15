@@ -9,6 +9,7 @@
 import * as gemini from './gemini';
 import { getSupabaseClient, saveProduct } from './supabase';
 import { calculateMacroScore } from '../utils/thresholds';
+import { logError } from './telemetry';
 
 /**
  * MAIN ANALYSIS FLOW
@@ -126,30 +127,46 @@ export async function analyzeProduct(product, options = {}) {
     finalPayload.aiPowered = true;
     console.log(`🔬 [AnalysisService] Step 4/5 → ✅ AI Result: score=${aiScoreVal}, animal=${finalPayload.aiData.animalContentFlag}, chemicals=${finalPayload.aiData.harmfulChemicals?.length || 0}`);
 
-    // ── 5. Cache to Supabase (fire & forget) ──
+    // ── 5. Cache to Supabase (fire & forget async IIFE) ──
+    // Bug #5 fix: was a nested .then().then() chain — inner errors were silently lost
+    // and a failed saveProduct would skip the upsert entirely, causing repeat Gemini calls.
     if (product.barcode && supabase && result) {
-      console.log(`🔬 [AnalysisService] Step 5/5 → 💾 Caching AI result to Supabase for "${product.barcode}"...`);
-      // Must guarantee the base product exists globally first to satisfy foreign key constraint!
-      saveProduct(product).then(() => {
-        supabase.from('product_ai_data').upsert({
-          barcode: product.barcode,
-          animal_content_flag: finalPayload.aiData.animalContentFlag,
-          animal_content_details: finalPayload.aiData.animalContentDetails,
-          harmful_chemicals: finalPayload.aiData.harmfulChemicals,
-          ai_score: finalPayload.aiData.aiScore,
-          ai_recommendation: finalPayload.aiData.aiRecommendation,
-          gemini_model: geminiModel,
-        }, { onConflict: 'barcode' }).then(({ error }) => {
-          if (error) console.warn(`🔬 [AnalysisService] Step 5/5 → ❌ Supabase cache write FAILED: ${error.message}`);
-          else console.log(`🔬 [AnalysisService] Step 5/5 → ✅ AI result cached to Supabase for "${product.barcode}"`);
-        });
-      });
+      (async () => {
+        try {
+          console.log(`🔬 [AnalysisService] Step 5/5 → 💾 Ensuring product exists in Supabase for FK constraint...`);
+          // saveProduct must succeed first — product_ai_data.barcode FK references products.barcode
+          const saved = await saveProduct(product);
+          if (!saved?.success) {
+            console.warn(`🔬 [AnalysisService] Step 5/5 → ⚠️ saveProduct failed (${saved?.error}), skipping AI cache write`);
+            return;
+          }
+
+          console.log(`🔬 [AnalysisService] Step 5/5 → 💾 Upserting AI result to product_ai_data for "${product.barcode}"...`);
+          const { error } = await supabase.from('product_ai_data').upsert({
+            barcode: product.barcode,
+            animal_content_flag: finalPayload.aiData.animalContentFlag,
+            animal_content_details: finalPayload.aiData.animalContentDetails,
+            harmful_chemicals: finalPayload.aiData.harmfulChemicals,
+            ai_score: finalPayload.aiData.aiScore,
+            ai_recommendation: finalPayload.aiData.aiRecommendation,
+            gemini_model: geminiModel,
+          }, { onConflict: 'barcode' });
+
+          if (error) {
+            logError('AnalysisService Cache Write', error, { barcode: product.barcode });
+          } else {
+            console.log(`🔬 [AnalysisService] Step 5/5 → ✅ AI result cached to Supabase for "${product.barcode}"`);
+          }
+        } catch (cacheErr) {
+          logError('AnalysisService Unexpected Cache Error', cacheErr, { barcode: product.barcode });
+        }
+      })();
     }
 
     console.log(`🔬 [AnalysisService] END — Full AI analysis complete ✅\n`);
     return finalPayload;
   } catch (error) {
-    console.error(`🔬 [AnalysisService] ❌ AI CALL FAILED: ${error.message}`);
+    logError('AnalysisService AI Call Failed', error, { barcode: product.barcode });
     return { ...finalPayload, error: error.message };
   }
 }

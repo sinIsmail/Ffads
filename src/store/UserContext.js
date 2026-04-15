@@ -1,7 +1,7 @@
 // Ffads — User Preferences Context (with in-app API key storage)
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setSupabaseCredentials } from '../services/supabase';
+import { setSupabaseCredentials, getSupabaseClient } from '../services/supabase';
 import { syncThresholds } from '../utils/thresholds';
 
 const USER_PREFS_KEY = '@ffads_user_prefs';
@@ -121,22 +121,44 @@ const UserContext = createContext();
 
 export function UserProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, defaultPrefs);
+  // Bug #2: Track whether we've already attempted session restore so we only do it once
+  const sessionCheckedRef = React.useRef(false);
 
+  // ── Load prefs from AsyncStorage on mount (with 5s Timeout) ──
   useEffect(() => {
+    let isMounted = true;
+    let timeoutId;
+
     (async () => {
       try {
         console.log(`👤 [UserStore] INIT → Loading user preferences from AsyncStorage...`);
-        const raw = await AsyncStorage.getItem(USER_PREFS_KEY);
+        const loadPromise = AsyncStorage.getItem(USER_PREFS_KEY);
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('AsyncStorage timeout after 5s')), 5000);
+        });
+
+        const raw = await Promise.race([loadPromise, timeoutPromise]);
+        clearTimeout(timeoutId);
+
+        if (!isMounted) return;
+
         const prefs = raw ? JSON.parse(raw) : {};
         console.log(`👤 [UserStore] INIT → ✅ Loaded prefs (email: ${prefs.email || 'none'}, keys: ${prefs.geminiApiKeys?.length || 0})`);
         dispatch({ type: 'SET_PREFS', payload: prefs });
-      } catch {
-        console.error(`👤 [UserStore] INIT → ❌ Failed to load prefs — using defaults`);
+      } catch (e) {
+        if (!isMounted) return;
+        console.error(`👤 [UserStore] INIT → ❌ Failed to load prefs (${e.message}) — using defaults`);
         dispatch({ type: 'SET_PREFS', payload: {} });
       }
     })();
+
+    return () => {
+      isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
+  // ── Persist to AsyncStorage + push credentials to Supabase singleton ──
   useEffect(() => {
     if (!state.loaded) return;
     const { loaded, ...prefs } = state;
@@ -150,6 +172,65 @@ export function UserProvider({ children }) {
     // Sync fallback FSSAI/WHO macro thresholds
     syncThresholds();
   }, [state]);
+
+  // ── Bug #2: Auto-restore Supabase auth session + lifecycle listener ──
+  useEffect(() => {
+    if (!state.loaded || sessionCheckedRef.current) return;
+    sessionCheckedRef.current = true;
+
+    const client = getSupabaseClient();
+    if (!client) {
+      console.log(`👤 [UserStore] SESSION RESTORE → Supabase not configured, skipping`);
+      return;
+    }
+
+    (async () => {
+      try {
+        console.log(`👤 [UserStore] SESSION RESTORE → Checking for saved Supabase session...`);
+        const { data: { session }, error } = await client.auth.getSession();
+        if (error) {
+          console.warn(`👤 [UserStore] SESSION RESTORE → getSession error: ${error.message}`);
+          return;
+        }
+        if (session?.user) {
+          const email = session.user.email || '';
+          const name = session.user.user_metadata?.full_name || '';
+          console.log(`👤 [UserStore] SESSION RESTORE → ✅ Active session found for "${email}"`);
+          // Only overwrite if not already set (avoid clearing a just-logged-in value)
+          if (!state.email) dispatch({ type: 'SET_EMAIL', payload: email });
+          if (!state.fullName && name) dispatch({ type: 'SET_FULL_NAME', payload: name });
+        } else {
+          console.log(`👤 [UserStore] SESSION RESTORE → No active session found (guest mode)`);
+        }
+      } catch (e) {
+        console.warn(`👤 [UserStore] SESSION RESTORE → Failed: ${e.message}`);
+      }
+    })();
+
+    // Token Lifecycle Listener: watch for expirations, logouts, or explicit sign-ins
+    let subscription;
+    try {
+      const resp = client.auth.onAuthStateChange((event, session) => {
+        console.log(`👤 [UserStore] AUTH STATE EVENT → ${event}`);
+        if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
+          dispatch({ type: 'SET_EMAIL', payload: '' });
+          dispatch({ type: 'SET_FULL_NAME', payload: '' });
+        } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          if (session?.user) {
+            dispatch({ type: 'SET_EMAIL', payload: session.user.email || '' });
+            dispatch({ type: 'SET_FULL_NAME', payload: session.user.user_metadata?.full_name || '' });
+          }
+        }
+      });
+      subscription = resp?.data?.subscription;
+    } catch (e) {
+      console.warn(`👤 [UserStore] AUTH STATE EVENT → Failed to attach listener: ${e.message}`);
+    }
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, [state.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <UserContext.Provider value={{ userPrefs: state, userDispatch: dispatch }}>

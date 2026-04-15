@@ -22,7 +22,7 @@ const aestheticColors = {
 };
 
 export default function LoginScreen({ navigation }) {
-  const { userDispatch } = useUser();
+  const { userPrefs, userDispatch } = useUser();
   const [isLogin, setIsLogin] = useState(true);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -167,8 +167,12 @@ export default function LoginScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.primaryBtn} onPress={handleAuth} disabled={loading}>
-              {loading ? (
+            <TouchableOpacity
+              style={[styles.primaryBtn, (!userPrefs.loaded) && { opacity: 0.5 }]}
+              onPress={handleAuth}
+              disabled={loading || !userPrefs.loaded}
+            >
+              {loading || !userPrefs.loaded ? (
                 <ActivityIndicator color={aestheticColors.buttonText} />
               ) : (
                 <Text style={styles.primaryBtnText}>

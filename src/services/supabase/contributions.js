@@ -1,6 +1,7 @@
 // Ffads — Supabase Contributions (User scan history + OCR contributions)
 
 import { getClient } from './client';
+import { logError } from '../telemetry';
 
 // ─── User Scans (History) ────────────────────
 
@@ -23,7 +24,7 @@ export async function recordScan(barcode, userEmail = null) {
     await client.from('user_scans').insert(row);
     console.log(`📊 [Supabase:Scans] ✅ Scan logged for "${barcode}"`);
   } catch (e) {
-    console.error(`📊 [Supabase:Scans] ❌ Scan log FAILED for "${barcode}": ${e.message}`);
+    logError('Supabase Scan Log', e, { barcode, userEmail });
   }
 }
 
@@ -71,11 +72,27 @@ export async function logUserContribution(payload) {
   }
 
   try {
-    console.log(`🤝 [Supabase:Contributions] WRITE → Logging OCR contribution for "${payload.barcode}" (email: ${payload.contributorEmail || 'none'})...`);
+    // Bug #4: If contributorEmail is empty (race condition on first launch before session
+    // restore completes), fall back to the real authenticated email from the JWT.
+    // This ensures auth.email() = contributor_email so RLS never blocks the insert.
+    let contributorEmail = payload.contributorEmail || null;
+    if (!contributorEmail) {
+      try {
+        const { data: { user } } = await client.auth.getUser();
+        if (user?.email) {
+          contributorEmail = user.email;
+          console.log(`🤝 [Supabase:Contributions] 🔑 Resolved email from JWT: "${contributorEmail}"`);
+        }
+      } catch (authErr) {
+        console.warn(`🤝 [Supabase:Contributions] ⚠️ Could not resolve email from JWT: ${authErr.message}`);
+      }
+    }
+
+    console.log(`🤝 [Supabase:Contributions] WRITE → Logging OCR contribution for "${payload.barcode}" (email: ${contributorEmail || 'none'})...`);
     const { error } = await client.from('user_contributions').insert([{
       barcode: payload.barcode,
       product_name: payload.productName || null,
-      contributor_email: payload.contributorEmail || null,
+      contributor_email: contributorEmail,
       raw_ocr_text: payload.rawOcr || null,
       gemini_filtered_data: payload.filteredData || null,
       front_photo_uploaded: !!payload.frontUploaded,
@@ -84,10 +101,10 @@ export async function logUserContribution(payload) {
       status: 'approved' // auto-approve logic
     }]);
     
-    if (error) console.error(`🤝 [Supabase:Contributions] ❌ WRITE FAILED: ${error.message}`);
+    if (error) logError('Supabase Contribution Insert', error, { barcode: payload.barcode });
     else console.log(`🤝 [Supabase:Contributions] ✅ Contribution logged for "${payload.barcode}"`);
   } catch (e) {
-    console.error(`🤝 [Supabase:Contributions] ❌ Error: ${e.message}`);
+    logError('Supabase Contribution Routine', e, { barcode: payload.barcode });
   }
 }
 

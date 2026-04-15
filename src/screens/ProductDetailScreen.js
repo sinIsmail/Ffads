@@ -54,19 +54,32 @@ export default function ProductDetailScreen({ route, navigation }) {
   const [offImages, setOffImages] = useState([]);
 
   // Fetch Open Food Facts Images Directly on Mount
+// Fetch Open Food Facts Images Directly on Mount
   React.useEffect(() => {
-    if (!product?.barcode) return;
+    if (!product?.barcode) console.log('[OFF] barcode:', product?.barcode); return;
     let isMounted = true;
     (async () => {
       try {
-        const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${product.barcode}?fields=image_front_url,image_ingredients_url,image_nutrition_url`);
+        const res = await fetch(
+          `https://world.openfoodfacts.org/api/v2/product/${product.barcode}?fields=image_front_url,image_ingredients_url,image_nutrition_url`,
+          {
+            headers: {
+              'User-Agent': 'Foodfadz - React Native App', // Prevents OFF from blocking the request
+              'Accept': 'application/json'
+            }
+          }
+        );
         const json = await res.json();
+        
         if (json.status === 1 && json.product && isMounted) {
             const urls = [
                 json.product.image_front_url,
                 json.product.image_nutrition_url,
                 json.product.image_ingredients_url
-            ].filter(Boolean);
+            ]
+            .filter(Boolean)
+            .map(url => url.replace('http://', 'https://')); // 👈 Force HTTPS for Android
+
             if (urls.length > 0) setOffImages(urls);
         }
       } catch (err) {
@@ -704,8 +717,9 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: spacing.xl },
 
   imageSection: {
-    marginBottom: spacing.lg, borderRadius: borderRadius.xl,
-    overflow: 'hidden', ...shadows.md,
+    marginBottom: spacing.lg,
+  borderRadius: borderRadius.xl,
+    ...shadows.md,
   },
   productImage: { width: '100%', height: 220, borderRadius: borderRadius.xl },
   placeholderImage: {
