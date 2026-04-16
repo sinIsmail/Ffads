@@ -47,8 +47,8 @@ export default function AnimatedSplashScreen({ navigation }) {
     <View style={styles.container}>
       <Video
         source={require('../../assets/SPLASH-DEMO.mp4')} 
-        style={StyleSheet.absoluteFill} 
-        resizeMode={ResizeMode.COVER}   
+        style={styles.video} // <-- Applied custom size style here
+        resizeMode={ResizeMode.CONTAIN} // <-- Changed to CONTAIN to prevent cropping
         shouldPlay                      
         isLooping={false}               
         onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
@@ -60,8 +60,13 @@ export default function AnimatedSplashScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000', 
+    backgroundColor: '#ffffffff', // Black background
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  video: {
+    // Adjust these percentages to make the video smaller or larger
+    width: '100%', 
+    height: '100%', 
   },
 });

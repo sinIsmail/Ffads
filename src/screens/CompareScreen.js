@@ -1,22 +1,39 @@
-// Ffads — Compare Screen (Redesigned: Slot-based picker with search)
+// Ffads — Compare Screen (White Niche Redesign)
 import React, { useMemo, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Image, Modal, TextInput, FlatList, Pressable,
+  Image, Modal, TextInput, FlatList, StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import { colors } from '../theme/colors';
-import { typography } from '../theme/typography';
-import { spacing, borderRadius, shadows } from '../theme/spacing';
 import { useProducts } from '../store/ProductContext';
 import { calculateScore } from '../utils/scoring';
 import { classifyIngredients } from '../utils/ingredientDictionary';
 
+// ─── Design Tokens (White Niche) ─────────────────────────────────────────────
+const C = {
+  white:      '#FFFFFF',
+  bg:         '#FFFFFF',
+  ink:        '#0A0A0A',
+  inkMid:     '#3D3D3D',
+  inkSoft:    '#8A8A8A',
+  inkFaint:   '#E8E8E8',
+  inkGhost:   '#F5F5F5',
+  accent:     '#0A0A0A',   // primary = black
+  good:       '#16A34A',
+  goodSoft:   '#F0FDF4',
+  goodBorder: '#BBF7D0',
+  warn:       '#CA8A04',
+  warnSoft:   '#FEFCE8',
+  bad:        '#DC2626',
+  badSoft:    '#FEF2F2',
+};
+
 // ─── Product Search Modal ─────────────────────────────────────────────────────
 function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts }) {
   const [query, setQuery] = useState('');
+  const insets = useSafeAreaInsets();
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -40,25 +57,27 @@ function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={modal.container}>
-        {/* Modal Header */}
+      <View style={[modal.container, { paddingTop: insets.top }]}>
+        <StatusBar barStyle="dark-content" backgroundColor={C.white} />
+
+        {/* Header */}
         <View style={modal.header}>
-          <View style={modal.headerLeft}>
-            <Text style={modal.title}>Search Products</Text>
-            <Text style={modal.sub}>Choose from your scan history</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={modal.title}>Choose Product</Text>
+            <Text style={modal.sub}>From your scan history</Text>
           </View>
           <TouchableOpacity style={modal.closeBtn} onPress={() => { setQuery(''); onClose(); }}>
-            <Ionicons name="close" size={20} color="#64748B" />
+            <Ionicons name="close" size={18} color={C.ink} />
           </TouchableOpacity>
         </View>
 
-        {/* Search bar */}
+        {/* Search */}
         <View style={modal.searchWrap}>
-          <Ionicons name="search-outline" size={18} color="#94A3B8" style={{ marginLeft: 14 }} />
+          <Ionicons name="search-outline" size={16} color={C.inkSoft} style={{ marginLeft: 14 }} />
           <TextInput
             style={modal.searchInput}
             placeholder="Search by name, brand or barcode…"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={C.inkSoft}
             value={query}
             onChangeText={setQuery}
             autoFocus
@@ -66,16 +85,16 @@ function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts
           />
         </View>
 
-        {/* Product list */}
+        {/* List */}
         {allProducts.length === 0 ? (
           <View style={modal.emptyWrap}>
-            <Text style={{ fontSize: 40 }}>📦</Text>
+            <Text style={modal.emptyIcon}>📦</Text>
             <Text style={modal.emptyTitle}>No products yet</Text>
             <Text style={modal.emptySub}>Scan some products first, then come back to compare them.</Text>
           </View>
         ) : filtered.length === 0 ? (
           <View style={modal.emptyWrap}>
-            <Text style={{ fontSize: 40 }}>🔍</Text>
+            <Text style={modal.emptyIcon}>🔍</Text>
             <Text style={modal.emptyTitle}>No matches</Text>
             <Text style={modal.emptySub}>Try a different name or brand.</Text>
           </View>
@@ -83,18 +102,28 @@ function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts
           <FlatList
             data={filtered}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 60 }}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 80, gap: 1 }}
             keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => {
+            renderItem={({ item, index }) => {
               const classified = classifyIngredients(item.ingredients || []);
               const { score, scoreColor } = calculateScore({ nutrition: item.nutrition, classifiedIngredients: classified });
+              const isFirst = index === 0;
+              const isLast  = index === filtered.length - 1;
               return (
-                <TouchableOpacity style={modal.productRow} onPress={() => handleSelect(item)} activeOpacity={0.75}>
+                <TouchableOpacity
+                  style={[
+                    modal.productRow,
+                    isFirst && { borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+                    isLast  && { borderBottomLeftRadius: 16, borderBottomRightRadius: 16 },
+                  ]}
+                  onPress={() => handleSelect(item)}
+                  activeOpacity={0.6}
+                >
                   {item.images?.front ? (
                     <Image source={{ uri: item.images.front }} style={modal.productImg} />
                   ) : (
                     <View style={modal.productImgPlaceholder}>
-                      <Ionicons name="cube-outline" size={20} color="#CBD5E1" />
+                      <Ionicons name="cube-outline" size={18} color={C.inkSoft} />
                     </View>
                   )}
                   <View style={{ flex: 1 }}>
@@ -102,11 +131,9 @@ function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts
                     <Text style={modal.productBrand} numberOfLines={1}>{item.brand || 'Unknown brand'}</Text>
                   </View>
                   {score != null && (
-                    <View style={[modal.scorePill, { borderColor: scoreColor }]}>
-                      <Text style={[modal.scorePillTxt, { color: scoreColor }]}>{score}</Text>
-                    </View>
+                    <Text style={[modal.scoreTag, { color: scoreColor }]}>{score}</Text>
                   )}
-                  <Ionicons name="chevron-forward" size={16} color="#CBD5E1" />
+                  <Ionicons name="chevron-forward" size={14} color={C.inkFaint} />
                 </TouchableOpacity>
               );
             }}
@@ -121,12 +148,12 @@ function ProductSearchModal({ visible, onClose, onSelect, excludeId, allProducts
 function SlotButton({ label, product, onAdd, onRemove }) {
   if (!product) {
     return (
-      <TouchableOpacity style={slot.empty} onPress={onAdd} activeOpacity={0.8}>
-        <View style={slot.plusCircle}>
-          <Ionicons name="add" size={26} color="#6366F1" />
+      <TouchableOpacity style={slot.empty} onPress={onAdd} activeOpacity={0.7}>
+        <View style={slot.plusRing}>
+          <Ionicons name="add" size={22} color={C.ink} />
         </View>
         <Text style={slot.emptyLabel}>{label}</Text>
-        <Text style={slot.emptyHint}>Tap to add</Text>
+        <Text style={slot.emptyHint}>Tap to select</Text>
       </TouchableOpacity>
     );
   }
@@ -135,13 +162,13 @@ function SlotButton({ label, product, onAdd, onRemove }) {
   return (
     <View style={slot.filled}>
       <TouchableOpacity style={slot.removeBtn} onPress={onRemove} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-        <Ionicons name="close-circle" size={20} color="#94A3B8" />
+        <Ionicons name="close-circle-outline" size={18} color={C.inkSoft} />
       </TouchableOpacity>
       {product.images?.front ? (
         <Image source={{ uri: product.images.front }} style={slot.img} />
       ) : (
         <View style={slot.imgPlaceholder}>
-          <Ionicons name="cube-outline" size={24} color="#CBD5E1" />
+          <Ionicons name="cube-outline" size={22} color={C.inkSoft} />
         </View>
       )}
       {score != null && (
@@ -161,9 +188,9 @@ export default function CompareScreen() {
   const { productState } = useProducts();
   const allProducts = productState.history;
 
-  const [slotA, setSlotA] = useState(null);  // product object | null
+  const [slotA, setSlotA] = useState(null);
   const [slotB, setSlotB] = useState(null);
-  const [pickingSlot, setPickingSlot] = useState(null); // 'A' | 'B' | null
+  const [pickingSlot, setPickingSlot] = useState(null);
 
   const openPicker = useCallback((which) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -187,7 +214,6 @@ export default function CompareScreen() {
     setSlotB(null);
   }, []);
 
-  // Compute analyses
   const analyses = useMemo(() => {
     return [slotA, slotB].filter(Boolean).map((p) => {
       const classified = classifyIngredients(p.ingredients || []);
@@ -203,24 +229,24 @@ export default function CompareScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={C.white} />
 
       {/* ── Header ── */}
       <View style={styles.header}>
         <View>
+          <Text style={styles.eyebrow}>SIDE-BY-SIDE</Text>
           <Text style={styles.title}>Compare</Text>
-          <Text style={styles.subtitle}>
-            {ready ? 'Side-by-side analysis ready' : 'Add 2 products to compare'}
-          </Text>
         </View>
         {(slotA || slotB) && (
           <TouchableOpacity style={styles.clearAllBtn} onPress={clearAll}>
-            <Ionicons name="trash-outline" size={14} color="#EF4444" />
-            <Text style={styles.clearAllTxt}>Clear</Text>
+            <Text style={styles.clearAllTxt}>Clear all</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* ── Slot Picker Row (Expands when empty, collapses when comparing) ── */}
+      <View style={styles.divider} />
+
+      {/* ── Slot Row ── */}
       {!ready ? (
         <View style={styles.slotsRow}>
           <SlotButton label="Product A" product={slotA} onAdd={() => openPicker('A')} onRemove={() => clearSlot('A')} />
@@ -228,53 +254,45 @@ export default function CompareScreen() {
           <SlotButton label="Product B" product={slotB} onAdd={() => openPicker('B')} onRemove={() => clearSlot('B')} />
         </View>
       ) : (
-        <View style={styles.compactPickerRow}>
-          <TouchableOpacity style={styles.compactPickerBtn} onPress={() => openPicker('A')} activeOpacity={0.7}>
-            <Ionicons name="swap-horizontal" size={14} color="#64748B" />
-            <Text style={styles.compactPickerBtnTxt} numberOfLines={1}>{slotA.name}</Text>
+        <View style={styles.compactRow}>
+          <TouchableOpacity style={styles.compactBtn} onPress={() => openPicker('A')} activeOpacity={0.6}>
+            <Text style={styles.compactBtnTxt} numberOfLines={1}>{slotA.name}</Text>
+            <Ionicons name="swap-horizontal-outline" size={13} color={C.inkSoft} />
           </TouchableOpacity>
           <Text style={styles.compactVs}>VS</Text>
-          <TouchableOpacity style={styles.compactPickerBtn} onPress={() => openPicker('B')} activeOpacity={0.7}>
-            <Text style={styles.compactPickerBtnTxt} numberOfLines={1}>{slotB.name}</Text>
-            <Ionicons name="swap-horizontal" size={14} color="#64748B" />
+          <TouchableOpacity style={styles.compactBtn} onPress={() => openPicker('B')} activeOpacity={0.6}>
+            <Ionicons name="swap-horizontal-outline" size={13} color={C.inkSoft} />
+            <Text style={styles.compactBtnTxt} numberOfLines={1}>{slotB.name}</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* ── Compare button (if both slots filled) ── */}
-      {ready ? null : (
-        <View style={styles.hintRow}>
-          <Ionicons name="information-circle-outline" size={14} color="#94A3B8" />
-          <Text style={styles.hintText}>
-            {!slotA && !slotB ? 'Tap a slot to search and add a product' :
-             !slotA ? 'Add Product A to start comparison' :
-             'Add Product B to complete comparison'}
-          </Text>
-        </View>
+      {/* ── Hint ── */}
+      {!ready && (
+        <Text style={styles.hintText}>
+          {!slotA && !slotB ? 'Select two products to compare' :
+           !slotA ? 'Select Product A' : 'Select Product B'}
+        </Text>
       )}
 
-      {/* ── Comparison Results ── */}
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.results}
-        showsVerticalScrollIndicator={false}
-      >
+      {/* ── Results ── */}
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.results} showsVerticalScrollIndicator={false}>
         {!ready ? (
           <View style={styles.emptyState}>
-            <Text style={{ fontSize: 56 }}>⚖️</Text>
-            <Text style={styles.emptyTitle}>No comparison yet</Text>
-            <Text style={styles.emptySub}>
-              Add two products using the slots above to see a detailed side-by-side analysis.
-            </Text>
+            <Text style={styles.emptyIcon}>⚖️</Text>
+            <Text style={styles.emptyTitle}>Nothing to compare</Text>
+            <Text style={styles.emptySub}>Add two products using the slots above.</Text>
           </View>
         ) : (
           <>
-            {/* Winner banner */}
+            {/* Winner Banner */}
             <View style={styles.winnerBanner}>
               <View style={styles.winnerLeft}>
-                <Text style={styles.winnerIcon}>🏆</Text>
-                <View>
-                  <Text style={styles.winnerLabel}>Better Choice</Text>
+                <View style={styles.trophyBox}>
+                  <Text style={{ fontSize: 16 }}>🏆</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.winnerLabel}>BETTER CHOICE</Text>
                   <Text style={styles.winnerName} numberOfLines={1}>
                     {analyses[betterIdx].product.name}
                   </Text>
@@ -287,7 +305,7 @@ export default function CompareScreen() {
               </View>
             </View>
 
-            {/* Score cards */}
+            {/* Score Cards */}
             <View style={styles.scoreCards}>
               {analyses.map((a, idx) => {
                 const isWinner = idx === betterIdx;
@@ -295,14 +313,14 @@ export default function CompareScreen() {
                   <View key={a.product.id} style={[styles.scoreCard, isWinner && styles.scoreCardWinner]}>
                     {isWinner && (
                       <View style={styles.bestTag}>
-                        <Text style={styles.bestTagTxt}>BEST ✓</Text>
+                        <Text style={styles.bestTagTxt}>BEST</Text>
                       </View>
                     )}
                     {a.product.images?.front ? (
                       <Image source={{ uri: a.product.images.front }} style={styles.cardImg} />
                     ) : (
                       <View style={styles.cardImgPlaceholder}>
-                        <Ionicons name="cube-outline" size={28} color="#CBD5E1" />
+                        <Ionicons name="cube-outline" size={24} color={C.inkSoft} />
                       </View>
                     )}
                     <View style={[styles.cardScoreBubble, { borderColor: a.scoreColor }]}>
@@ -316,10 +334,9 @@ export default function CompareScreen() {
               })}
             </View>
 
-            {/* Nutrition table */}
+            {/* Nutrition Table */}
             <View style={styles.tableCard}>
-              <Text style={styles.tableTitle}>Nutrition Comparison</Text>
-              {/* Column labels */}
+              <Text style={styles.tableTitle}>Nutrition / 100g</Text>
               <View style={styles.colLabelRow}>
                 <View style={{ flex: 2 }} />
                 {analyses.map((a, i) => (
@@ -330,18 +347,18 @@ export default function CompareScreen() {
                   </View>
                 ))}
               </View>
-              <NutRow icon="medical-outline"       label="Sugar"       values={analyses.map(a => fmtG(a.product.nutrition?.sugar))}         better={lower(analyses, a => a.product.nutrition?.sugar)} />
-              <NutRow icon="water-outline"         label="Sodium"      values={analyses.map(a => fmtMg(a.product.nutrition?.sodium))}        better={lower(analyses, a => a.product.nutrition?.sodium)} />
-              <NutRow icon="fast-food-outline"     label="Total Fat"   values={analyses.map(a => fmtG(a.product.nutrition?.fat))}            better={lower(analyses, a => a.product.nutrition?.fat)} />
-              <NutRow icon="alert-circle-outline"  label="Sat. Fat"    values={analyses.map(a => fmtG(a.product.nutrition?.saturatedFat))}   better={lower(analyses, a => a.product.nutrition?.saturatedFat)} />
-              <NutRow icon="fitness-outline"       label="Protein"     values={analyses.map(a => fmtG(a.product.nutrition?.protein))}        better={higher(analyses, a => a.product.nutrition?.protein)} />
-              <NutRow icon="leaf-outline"          label="Fiber"       values={analyses.map(a => fmtG(a.product.nutrition?.fiber))}          better={higher(analyses, a => a.product.nutrition?.fiber)} />
-              <NutRow icon="flash-outline"         label="Energy"      values={analyses.map(a => fmtKcal(a.product.nutrition?.energy))}      better={lower(analyses, a => a.product.nutrition?.energy)} />
-              <NutRow icon="flask-outline"         label="Ingredients" values={analyses.map(a => String(a.product.ingredients?.length || 0))} better={lower(analyses, a => a.product.ingredients?.length || 0)} />
-              <NutRow icon="warning-outline"       label="Risky Ingr." values={analyses.map(a => String(a.classified.filter(i => i.color === 'red').length))} better={lower(analyses, a => a.classified.filter(i => i.color === 'red').length)} last />
+              <NutRow icon="medical-outline"     label="Sugar"      values={analyses.map(a => fmtG(a.product.nutrition?.sugar))}         better={lower(analyses, a => a.product.nutrition?.sugar)} />
+              <NutRow icon="water-outline"       label="Sodium"     values={analyses.map(a => fmtMg(a.product.nutrition?.sodium))}        better={lower(analyses, a => a.product.nutrition?.sodium)} />
+              <NutRow icon="fast-food-outline"   label="Total Fat"  values={analyses.map(a => fmtG(a.product.nutrition?.fat))}            better={lower(analyses, a => a.product.nutrition?.fat)} />
+              <NutRow icon="alert-circle-outline" label="Sat. Fat"  values={analyses.map(a => fmtG(a.product.nutrition?.saturatedFat))}   better={lower(analyses, a => a.product.nutrition?.saturatedFat)} />
+              <NutRow icon="fitness-outline"     label="Protein"    values={analyses.map(a => fmtG(a.product.nutrition?.protein))}        better={higher(analyses, a => a.product.nutrition?.protein)} />
+              <NutRow icon="leaf-outline"        label="Fiber"      values={analyses.map(a => fmtG(a.product.nutrition?.fiber))}          better={higher(analyses, a => a.product.nutrition?.fiber)} />
+              <NutRow icon="flash-outline"       label="Energy"     values={analyses.map(a => fmtKcal(a.product.nutrition?.energy))}      better={lower(analyses, a => a.product.nutrition?.energy)} />
+              <NutRow icon="flask-outline"       label="Ingr. Count" values={analyses.map(a => String(a.product.ingredients?.length || 0))} better={lower(analyses, a => a.product.ingredients?.length || 0)} />
+              <NutRow icon="warning-outline"     label="Risky Ingr." values={analyses.map(a => String(a.classified.filter(i => i.color === 'red').length))} better={lower(analyses, a => a.classified.filter(i => i.color === 'red').length)} last />
             </View>
 
-            {/* Ingredient breakdown */}
+            {/* Ingredient Breakdown */}
             <View style={styles.tableCard}>
               <Text style={styles.tableTitle}>Ingredient Breakdown</Text>
               {analyses.map((a, idx) => {
@@ -353,7 +370,7 @@ export default function CompareScreen() {
                   <View key={idx} style={styles.breakdownBlock}>
                     <View style={styles.breakdownHeader}>
                       <Text style={styles.breakdownName} numberOfLines={1}>{a.product.name}</Text>
-                      <Text style={styles.breakdownCount}>{total} ingredients</Text>
+                      <Text style={styles.breakdownCount}>{total} total</Text>
                     </View>
                     <View style={styles.breakdownBar}>
                       {green  > 0 && <View style={[styles.barSeg, { flex: green,  backgroundColor: '#22C55E' }]} />}
@@ -361,10 +378,11 @@ export default function CompareScreen() {
                       {red    > 0 && <View style={[styles.barSeg, { flex: red,    backgroundColor: '#EF4444' }]} />}
                     </View>
                     <View style={styles.breakdownPills}>
-                      {green  > 0 && <View style={[styles.breakdownPill, { backgroundColor: '#DCFCE7' }]}><Text style={[styles.breakdownPillTxt, { color: '#166534' }]}>✓ {green} Safe</Text></View>}
-                      {yellow > 0 && <View style={[styles.breakdownPill, { backgroundColor: '#FEF9C3' }]}><Text style={[styles.breakdownPillTxt, { color: '#854D0E' }]}>⚠ {yellow} Caution</Text></View>}
-                      {red    > 0 && <View style={[styles.breakdownPill, { backgroundColor: '#FEE2E2' }]}><Text style={[styles.breakdownPillTxt, { color: '#991B1B' }]}>✕ {red} Risky</Text></View>}
+                      {green  > 0 && <View style={[styles.breakdownPill, { backgroundColor: C.goodSoft }]}><Text style={[styles.breakdownPillTxt, { color: C.good }]}>✓ {green} Safe</Text></View>}
+                      {yellow > 0 && <View style={[styles.breakdownPill, { backgroundColor: C.warnSoft }]}><Text style={[styles.breakdownPillTxt, { color: C.warn }]}>⚠ {yellow} Caution</Text></View>}
+                      {red    > 0 && <View style={[styles.breakdownPill, { backgroundColor: C.badSoft  }]}><Text style={[styles.breakdownPillTxt, { color: C.bad  }]}>✕ {red} Risky</Text></View>}
                     </View>
+                    {idx < analyses.length - 1 && <View style={styles.blockDivider} />}
                   </View>
                 );
               })}
@@ -374,7 +392,7 @@ export default function CompareScreen() {
         <View style={{ height: 120 }} />
       </ScrollView>
 
-      {/* ── Search Modal ── */}
+      {/* Search Modal */}
       <ProductSearchModal
         visible={pickingSlot !== null}
         onClose={() => setPickingSlot(null)}
@@ -386,11 +404,11 @@ export default function CompareScreen() {
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── NutRow ───────────────────────────────────────────────────────────────────
 function NutRow({ icon, label, values, better, last }) {
   return (
     <View style={[table.row, !last && table.rowBorder]}>
-      <Ionicons name={icon} size={14} color="#94A3B8" style={{ marginRight: 6 }} />
+      <Ionicons name={icon} size={13} color={C.inkSoft} style={{ marginRight: 8 }} />
       <Text style={table.label}>{label}</Text>
       {values.map((val, i) => (
         <View key={i} style={[table.cell, i === better && table.cellBetter]}>
@@ -403,9 +421,9 @@ function NutRow({ icon, label, values, better, last }) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmtG(v)    { return v != null ? `${v}g`   : '—'; }
-function fmtMg(v)   { return v != null ? `${v}mg`  : '—'; }
-function fmtKcal(v) { return v != null ? `${v}`    : '—'; }
+function fmtG(v)    { return v != null ? `${v}g`  : '—'; }
+function fmtMg(v)   { return v != null ? `${v}mg` : '—'; }
+function fmtKcal(v) { return v != null ? `${v}`   : '—'; }
 
 function lower(analyses, getter) {
   if (analyses.length < 2) return -1;
@@ -422,214 +440,214 @@ function higher(analyses, getter) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F8FAFC' },
+  root: { flex: 1, backgroundColor: C.white },
 
   header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 8,
+    flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between',
+    paddingHorizontal: 24, paddingTop: 16, paddingBottom: 16,
   },
-  title:    { fontSize: 30, fontWeight: '800', color: '#0F172A', letterSpacing: -0.8 },
-  subtitle: { fontSize: 13, color: '#94A3B8', marginTop: 2, fontWeight: '500' },
-  clearAllBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: 12, paddingVertical: 8,
-    backgroundColor: '#FEF2F2', borderRadius: 20, borderWidth: 1, borderColor: '#FECACA',
-  },
-  clearAllTxt: { fontSize: 12, fontWeight: '700', color: '#EF4444' },
+  eyebrow: { fontSize: 10, fontWeight: '700', color: C.inkSoft, letterSpacing: 2, marginBottom: 4 },
+  title:   { fontSize: 32, fontWeight: '800', color: C.ink, letterSpacing: -1 },
+  clearAllBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: C.inkFaint },
+  clearAllTxt: { fontSize: 12, fontWeight: '600', color: C.inkMid },
+  divider: { height: 1, backgroundColor: C.inkFaint, marginHorizontal: 0 },
 
   slotsRow: {
     flexDirection: 'row', alignItems: 'stretch',
-    paddingHorizontal: 16, marginTop: 4, gap: 0,
+    paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8, gap: 0,
   },
-  vsDivider: {
-    width: 36, alignItems: 'center', justifyContent: 'center',
+  vsDivider: { width: 32, alignItems: 'center', justifyContent: 'center' },
+  vsText:    { fontSize: 11, fontWeight: '900', color: C.inkFaint, letterSpacing: 2 },
+
+  compactRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 14, gap: 10,
   },
-  vsText: { fontSize: 13, fontWeight: '900', color: '#CBD5E1', letterSpacing: 1 },
-
-  compactPickerRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 24, paddingVertical: 8, gap: 12,
+  compactBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    borderWidth: 1, borderColor: C.inkFaint,
+    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12,
   },
-  compactPickerBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: '#F1F5F9', paddingVertical: 10, paddingHorizontal: 16,
-    borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0',
+  compactBtnTxt: { fontSize: 12, fontWeight: '700', color: C.inkMid, flex: 1 },
+  compactVs: { fontSize: 11, fontWeight: '900', color: C.inkSoft },
+
+  hintText: {
+    fontSize: 12, color: C.inkSoft, fontWeight: '500',
+    paddingHorizontal: 24, marginBottom: 4,
   },
-  compactPickerBtnTxt: { fontSize: 13, fontWeight: '700', color: '#334155', flexShrink: 1 },
-  compactVs: { fontSize: 12, fontWeight: '900', color: '#94A3B8' },
 
-  hintRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 24, marginTop: 8,
-  },
-  hintText: { fontSize: 12, color: '#94A3B8', fontWeight: '500', flex: 1 },
+  results: { paddingHorizontal: 20, paddingTop: 20 },
 
-  results: { paddingHorizontal: 16, paddingTop: 16 },
+  emptyState: { alignItems: 'center', paddingTop: 80, gap: 12, paddingHorizontal: 32 },
+  emptyIcon:  { fontSize: 48 },
+  emptyTitle: { fontSize: 20, fontWeight: '800', color: C.ink },
+  emptySub:   { fontSize: 14, color: C.inkSoft, textAlign: 'center', lineHeight: 20 },
 
-  emptyState: { alignItems: 'center', paddingTop: 60, gap: 12, paddingHorizontal: 32 },
-  emptyTitle: { fontSize: 20, fontWeight: '800', color: '#1E293B', textAlign: 'center' },
-  emptySub:   { fontSize: 14, color: '#94A3B8', textAlign: 'center', lineHeight: 20 },
-
+  // Winner
   winnerBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#F0FDF4', borderRadius: 20, padding: 16, marginBottom: 16,
-    borderWidth: 1, borderColor: '#BBF7D0',
+    backgroundColor: C.ink, borderRadius: 20, padding: 18, marginBottom: 16,
   },
-  winnerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
-  winnerIcon: { fontSize: 28 },
-  winnerLabel: { fontSize: 10, fontWeight: '700', color: '#166534', textTransform: 'uppercase', letterSpacing: 0.5 },
-  winnerName:  { fontSize: 16, fontWeight: '800', color: '#14532D', marginTop: 2, flex: 1 },
-  winnerScore: { width: 52, height: 52, borderRadius: 26, borderWidth: 2.5, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF' },
-  winnerScoreNum: { fontSize: 20, fontWeight: '900' },
+  winnerLeft: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
+  trophyBox: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center',
+  },
+  winnerLabel: { fontSize: 9, fontWeight: '800', color: 'rgba(255,255,255,0.5)', letterSpacing: 2, marginBottom: 3 },
+  winnerName:  { fontSize: 15, fontWeight: '800', color: C.white, flex: 1 },
+  winnerScore: {
+    width: 50, height: 50, borderRadius: 25, borderWidth: 2,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: C.white,
+  },
+  winnerScoreNum: { fontSize: 18, fontWeight: '900' },
 
-  scoreCards:  { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  // Score cards
+  scoreCards: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   scoreCard: {
-    flex: 1, backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16,
+    flex: 1, backgroundColor: C.white, borderRadius: 20, padding: 16,
     alignItems: 'center', gap: 6,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 3,
-    borderWidth: 2, borderColor: '#F1F5F9',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
-  scoreCardWinner: { borderColor: '#86EFAC', backgroundColor: '#F0FDF4' },
+  scoreCardWinner: { borderColor: C.ink, borderWidth: 1.5 },
   bestTag: {
     position: 'absolute', top: 0, right: 0,
-    paddingHorizontal: 10, paddingVertical: 4,
-    backgroundColor: '#22C55E', borderTopRightRadius: 20, borderBottomLeftRadius: 14,
+    paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: C.ink, borderTopRightRadius: 20, borderBottomLeftRadius: 14,
   },
-  bestTagTxt: { fontSize: 9, fontWeight: '800', color: '#FFF', letterSpacing: 0.5 },
-  cardImg: { width: 60, height: 60, borderRadius: 14 },
+  bestTagTxt: { fontSize: 8, fontWeight: '800', color: C.white, letterSpacing: 1 },
+  cardImg: { width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: C.inkFaint },
   cardImgPlaceholder: {
-    width: 60, height: 60, borderRadius: 14,
-    backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center',
+    width: 56, height: 56, borderRadius: 12,
+    backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
   cardScoreBubble: {
-    width: 48, height: 48, borderRadius: 24, borderWidth: 2.5,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF',
+    width: 46, height: 46, borderRadius: 23, borderWidth: 2,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: C.white,
   },
-  cardScoreNum: { fontSize: 18, fontWeight: '900' },
-  cardGrade:    { fontSize: 10, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase' },
-  cardName:     { fontSize: 12, fontWeight: '800', color: '#1E293B', textAlign: 'center' },
-  cardBrand:    { fontSize: 11, color: '#94A3B8', fontWeight: '500' },
+  cardScoreNum: { fontSize: 17, fontWeight: '900' },
+  cardGrade:    { fontSize: 9, fontWeight: '700', color: C.inkSoft, letterSpacing: 1, textTransform: 'uppercase' },
+  cardName:     { fontSize: 11, fontWeight: '800', color: C.ink, textAlign: 'center', lineHeight: 15 },
+  cardBrand:    { fontSize: 10, color: C.inkSoft, fontWeight: '500' },
 
+  // Table card
   tableCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, marginBottom: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 2,
+    backgroundColor: C.white, borderRadius: 20, padding: 20, marginBottom: 16,
+    borderWidth: 1, borderColor: C.inkFaint,
   },
-  tableTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 16 },
+  tableTitle: { fontSize: 15, fontWeight: '800', color: C.ink, marginBottom: 16, letterSpacing: -0.3 },
   colLabelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  colLabel: { minWidth: 68, alignItems: 'center', marginLeft: 8 },
-  colLabelTxt: { fontSize: 11, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase' },
+  colLabel:    { minWidth: 68, alignItems: 'center', marginLeft: 8 },
+  colLabelTxt: { fontSize: 10, fontWeight: '700', color: C.inkSoft, textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  breakdownBlock: { marginBottom: 16 },
-  breakdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  breakdownName:  { fontSize: 13, fontWeight: '700', color: '#1E293B', flex: 1 },
-  breakdownCount: { fontSize: 12, color: '#94A3B8', fontWeight: '500' },
-  breakdownBar: { flexDirection: 'row', borderRadius: 8, overflow: 'hidden', height: 10, gap: 2, marginBottom: 10 },
-  barSeg: { borderRadius: 4 },
-  breakdownPills: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  breakdownPill:  { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  breakdownPillTxt: { fontSize: 11, fontWeight: '700' },
+  // Breakdown
+  breakdownBlock:  { marginBottom: 8 },
+  breakdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  breakdownName:   { fontSize: 13, fontWeight: '700', color: C.ink, flex: 1 },
+  breakdownCount:  { fontSize: 11, color: C.inkSoft, fontWeight: '500' },
+  breakdownBar:    { flexDirection: 'row', borderRadius: 6, overflow: 'hidden', height: 8, gap: 1, marginBottom: 10 },
+  barSeg:          { borderRadius: 3 },
+  breakdownPills:  { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  breakdownPill:   { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  breakdownPillTxt:{ fontSize: 11, fontWeight: '700' },
+  blockDivider:    { height: 1, backgroundColor: C.inkFaint, marginTop: 16, marginBottom: 8 },
 });
 
 const slot = StyleSheet.create({
   empty: {
-    flex: 1, backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 2,
-    borderColor: '#E2E8F0', borderStyle: 'dashed',
-    alignItems: 'center', justifyContent: 'center', paddingVertical: 28, gap: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1,
+    flex: 1, backgroundColor: C.white, borderRadius: 16, borderWidth: 1.5,
+    borderColor: C.inkFaint, borderStyle: 'dashed',
+    alignItems: 'center', justifyContent: 'center', paddingVertical: 32, gap: 10,
   },
-  plusCircle: {
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: '#EEF2FF', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: '#C7D2FE',
+  plusRing: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
-  emptyLabel: { fontSize: 14, fontWeight: '700', color: '#64748B' },
-  emptyHint:  { fontSize: 11, color: '#94A3B8', fontWeight: '500' },
+  emptyLabel: { fontSize: 13, fontWeight: '700', color: C.inkMid },
+  emptyHint:  { fontSize: 11, color: C.inkSoft, fontWeight: '500' },
 
   filled: {
-    flex: 1, backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 2,
-    borderColor: '#C7D2FE', paddingVertical: 16, paddingHorizontal: 12,
+    flex: 1, backgroundColor: C.white, borderRadius: 16, borderWidth: 1.5,
+    borderColor: C.ink, paddingVertical: 16, paddingHorizontal: 12,
     alignItems: 'center', gap: 6, position: 'relative',
-    shadowColor: '#6366F1', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.09, shadowRadius: 10, elevation: 3,
   },
-  removeBtn: {
-    position: 'absolute', top: 8, right: 8, zIndex: 10,
-  },
-  img: { width: 56, height: 56, borderRadius: 14 },
+  removeBtn:  { position: 'absolute', top: 8, right: 8, zIndex: 10 },
+  img: { width: 52, height: 52, borderRadius: 12, borderWidth: 1, borderColor: C.inkFaint },
   imgPlaceholder: {
-    width: 56, height: 56, borderRadius: 14,
-    backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center',
+    width: 52, height: 52, borderRadius: 12,
+    backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
   scoreBubble: {
-    width: 44, height: 44, borderRadius: 22, borderWidth: 2.5,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF',
+    width: 42, height: 42, borderRadius: 21, borderWidth: 2,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: C.white,
   },
-  scoreNum: { fontSize: 16, fontWeight: '900' },
-  name:  { fontSize: 11, fontWeight: '800', color: '#1E293B', textAlign: 'center' },
-  brand: { fontSize: 10, color: '#94A3B8', fontWeight: '500' },
+  scoreNum: { fontSize: 15, fontWeight: '900' },
+  name:  { fontSize: 11, fontWeight: '800', color: C.ink, textAlign: 'center', lineHeight: 14 },
+  brand: { fontSize: 10, color: C.inkSoft, fontWeight: '500' },
 });
 
 const table = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11 },
-  rowBorder: { borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
-  label: { fontSize: 13, fontWeight: '600', color: '#475569', flex: 2 },
+  rowBorder: { borderBottomWidth: 1, borderBottomColor: C.inkGhost },
+  label: { fontSize: 13, fontWeight: '600', color: C.inkMid, flex: 2 },
   cell: {
-    minWidth: 68, paddingVertical: 6, paddingHorizontal: 8,
+    minWidth: 68, paddingVertical: 7, paddingHorizontal: 8,
     borderRadius: 10, alignItems: 'center', marginLeft: 8,
-    backgroundColor: '#F8FAFC', flexDirection: 'row', gap: 4, justifyContent: 'center',
+    backgroundColor: C.inkGhost, flexDirection: 'row', gap: 4, justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
-  cellBetter: { backgroundColor: '#DCFCE7' },
-  value:      { fontSize: 13, fontWeight: '800', color: '#334155' },
-  valueBetter:{ color: '#166534' },
-  checkmark:  { fontSize: 10, color: '#22C55E', fontWeight: '800' },
+  cellBetter:  { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
+  value:       { fontSize: 12, fontWeight: '800', color: C.inkMid },
+  valueBetter: { color: '#15803D' },
+  checkmark:   { fontSize: 10, color: '#22C55E', fontWeight: '800' },
 });
 
 const modal = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: C.white },
   header: {
     flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between',
-    padding: 20, paddingTop: 24, borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
-    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16,
+    borderBottomWidth: 1, borderBottomColor: C.inkFaint,
   },
-  headerLeft: { flex: 1 },
-  title:  { fontSize: 22, fontWeight: '800', color: '#0F172A' },
-  sub:    { fontSize: 13, color: '#94A3B8', marginTop: 2, fontWeight: '500' },
+  title:  { fontSize: 22, fontWeight: '800', color: C.ink, letterSpacing: -0.5 },
+  sub:    { fontSize: 12, color: C.inkSoft, marginTop: 3, fontWeight: '500' },
   closeBtn: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: '#E2E8F0',
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
 
   searchWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#FFFFFF', margin: 16, borderRadius: 16,
-    borderWidth: 1.5, borderColor: '#E2E8F0',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    backgroundColor: C.inkGhost,
+    marginHorizontal: 20, marginVertical: 12,
+    borderRadius: 14, borderWidth: 1, borderColor: C.inkFaint,
   },
   searchInput: {
     flex: 1, paddingHorizontal: 12, paddingVertical: 14,
-    fontSize: 15, color: '#0F172A', fontWeight: '500',
+    fontSize: 14, color: C.ink, fontWeight: '500',
   },
 
-  emptyWrap: { alignItems: 'center', paddingTop: 80, gap: 10, paddingHorizontal: 32 },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: '#1E293B', textAlign: 'center' },
-  emptySub:   { fontSize: 14, color: '#94A3B8', textAlign: 'center', lineHeight: 20 },
+  emptyWrap:  { alignItems: 'center', paddingTop: 80, gap: 10, paddingHorizontal: 32 },
+  emptyIcon:  { fontSize: 40 },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: C.ink },
+  emptySub:   { fontSize: 14, color: C.inkSoft, textAlign: 'center', lineHeight: 20 },
 
   productRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14,
-    borderWidth: 1, borderColor: '#F1F5F9',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+    backgroundColor: C.white, padding: 14,
+    borderWidth: 1, borderColor: C.inkFaint,
+    borderRadius: 0,
   },
-  productImg: { width: 48, height: 48, borderRadius: 12 },
+  productImg:            { width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: C.inkFaint },
   productImgPlaceholder: {
-    width: 48, height: 48, borderRadius: 12,
-    backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center',
+    width: 44, height: 44, borderRadius: 10,
+    backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.inkFaint,
   },
-  productName:  { fontSize: 14, fontWeight: '700', color: '#0F172A' },
-  productBrand: { fontSize: 12, color: '#94A3B8', marginTop: 2, fontWeight: '500' },
-  scorePill: {
-    width: 36, height: 36, borderRadius: 18, borderWidth: 2,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF',
-  },
-  scorePillTxt: { fontSize: 13, fontWeight: '900' },
+  productName:  { fontSize: 14, fontWeight: '700', color: C.ink },
+  productBrand: { fontSize: 12, color: C.inkSoft, marginTop: 2, fontWeight: '500' },
+  scoreTag:     { fontSize: 14, fontWeight: '900', marginRight: 4 },
 });

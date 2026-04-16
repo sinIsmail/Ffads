@@ -12,10 +12,34 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { colors } from '../theme/colors';
 import { typography } from '../theme/typography';
 import { spacing, borderRadius, shadows } from '../theme/spacing';
+
+// OOM Crash Fix: Resize + compress every captured photo before storing as Base64.
+// Even at quality=0.3, a 50MP camera captures 4000x3000px images (~6MB Base64).
+// Capping to max 1024px wide and 60% quality reduces each photo to ~150–300KB.
+async function compressPhoto(uri) {
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 1024 } }],   // max 1024px wide, height auto-scales
+      {
+        compress: 0.6,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: true,
+      }
+    );
+    const sizeKB = Math.round((result.base64?.length || 0) / 1024);
+    console.log(`📸 [OCR:Compress] ${sizeKB}KB after resize+compress (max 1024px @ 60% JPEG)`);
+    return { uri: result.uri, base64: result.base64 };
+  } catch (e) {
+    console.error(`📸 [OCR:Compress] ❌ Compression failed: ${e.message} — using raw image`);
+    return null; // caller will fall back to raw asset
+  }
+}
 
 const PHOTO_SLOTS = [
   {
@@ -61,8 +85,9 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
     }
   }, [visible]);
 
-  // Max base64 size we'll send to Gemini Vision (~900KB base64 ≈ ~675KB image)
-  const MAX_BASE64_KB = 900;
+  // OOM Crash Fix: Safety net — reject anything that still exceeds this after compression.
+  // With the compressPhoto() pipeline this should never trigger, but it guards edge cases.
+  const MAX_BASE64_KB = 600;
 
   const handleCapture = async (slotKey) => {
     try {
@@ -74,40 +99,46 @@ export default function OCRScannerOverlay({ visible, onCancel, onSubmit }) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,   // Restored crop & rotate UI per user request
-        quality: 0.3,          // ← Keep quality low to prevent memory crashes
-        base64: true,
+        allowsEditing: true,
+        quality: 0.8,   // Higher raw quality is fine now — we compress below before storing
+        base64: false,  // Don't need base64 from picker — compressPhoto() generates it
       });
+
       if (!result.canceled && result.assets?.length > 0) {
         const asset = result.assets[0];
-        if (!asset.base64) {
-          Alert.alert('Photo Error', 'Could not read photo data. Please try again.');
+        if (!asset.uri) {
+          Alert.alert('Photo Error', 'Could not read photo URI. Please try again.');
           return;
         }
 
-        const sizeKB = Math.round(asset.base64.length / 1024);
-        console.log(`📸 [OCR:Overlay] Captured "${slotKey}" photo (~${sizeKB}KB)`);
+        console.log(`📸 [OCR:Overlay] Captured "${slotKey}" — compressing...`);
 
-        if (sizeKB > MAX_BASE64_KB) {
-          // Image is still too large even at low quality (very high-res sensor)
+        // OOM Crash Fix: Resize to max 1024px + 60% JPEG quality before storing Base64
+        const compressed = await compressPhoto(asset.uri);
+        const photoData = compressed ?? { uri: asset.uri, base64: null };
+
+        if (!photoData.base64) {
           Alert.alert(
-            'Photo Too Large',
-            `This photo is ${sizeKB}KB — Gemini works best under ${MAX_BASE64_KB}KB.\n\nMove closer to the label and retake, or use the Gallery to pick a cropped image.`,
-            [
-              { text: 'Retake', style: 'cancel' },
-              {
-                text: 'Use Anyway',
-                onPress: () => {
-                  setPhotos(prev => ({ ...prev, [slotKey]: { uri: asset.uri, base64: asset.base64 } }));
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                },
-              },
-            ]
+            'Compression Failed',
+            'Could not compress the photo. Please try again or choose a different image.',
           );
           return;
         }
 
-        setPhotos(prev => ({ ...prev, [slotKey]: { uri: asset.uri, base64: asset.base64 } }));
+        const sizeKB = Math.round(photoData.base64.length / 1024);
+        console.log(`📸 [OCR:Overlay] "${slotKey}" ready — final size: ${sizeKB}KB`);
+
+        if (sizeKB > MAX_BASE64_KB) {
+          // Extremely rare after compression — only fires on corrupted sensors
+          Alert.alert(
+            'Photo Too Large',
+            `Even after compression this photo is ${sizeKB}KB.\n\nMove closer to the label and retake.`,
+            [{ text: 'OK', style: 'cancel' }]
+          );
+          return;
+        }
+
+        setPhotos(prev => ({ ...prev, [slotKey]: photoData }));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (err) {

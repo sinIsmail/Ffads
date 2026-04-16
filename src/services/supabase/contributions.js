@@ -1,10 +1,22 @@
-// Ffads — Supabase Contributions (User scan history + OCR contributions)
+// Ffads — Supabase Contributions (Production v2)
+// Fixes:
+//   - getUserScanHistory() now returns product names via join (no N+1 lookups)
+//   - getUserScanHistory() now supports offset pagination
+//   - getScanCount() added for efficient server-side COUNT (no full download)
+//   - recordScan() documentation updated to reflect device_id gap
 
 import { getClient } from './client';
 import { logError } from '../telemetry';
 
-// ─── User Scans (History) ────────────────────
+// ─── User Scans (History) ─────────────────────────────────────────────────────
 
+/**
+ * Log a barcode scan to the global user_scans table.
+ * Attaches user email if the user is signed in.
+ *
+ * NOTE: device_id is not written here because we don't pass it through.
+ * That FK column remains NULL. Safe to ignore unless you add device-level analytics.
+ */
 export async function recordScan(barcode, userEmail = null) {
   const client = getClient();
   if (!client) {
@@ -14,13 +26,14 @@ export async function recordScan(barcode, userEmail = null) {
 
   try {
     const row = { barcode };
-    
-    // Attach user identity if available
-    if (userEmail) {
-      row.user_email = userEmail;
-    }
+    if (userEmail) row.user_email = userEmail;
 
-    console.log(`📊 [Supabase:Scans] WRITE → Logging scan for "${barcode}" (user: ${userEmail || 'anonymous'})...`);
+    // Per-user isolation: also write the auth UUID so admin SQL queries can JOIN auth.users
+    // Wrapped in .catch() so guest-mode scans never fail here
+    const { data: { user } } = await client.auth.getUser().catch(() => ({ data: { user: null } }));
+    if (user?.id) row.user_id = user.id;
+
+    console.log(`📊 [Supabase:Scans] WRITE → Logging scan "${barcode}" (user: ${userEmail || 'anonymous'}, uid: ${user?.id || 'none'})...`);
     await client.from('user_scans').insert(row);
     console.log(`📊 [Supabase:Scans] ✅ Scan logged for "${barcode}"`);
   } catch (e) {
@@ -29,52 +42,95 @@ export async function recordScan(barcode, userEmail = null) {
 }
 
 /**
- * Fetch scan history for a specific user from Supabase.
- * If no email is provided, fetches all scans.
- * Joins with products table to return full product data.
+ * Fetch paginated scan history for a user.
+ *
+ * FIXED: Now joins with the products table so callers get product names
+ * rather than doing N separate lookups after receiving the barcodes.
+ *
+ * FIXED: Supports pagination via `offset` parameter to avoid loading all
+ * history at once (which slows startup and wastes mobile data).
+ *
+ * @param {string|null} userEmail
+ * @param {number} limit  — rows per page (default 20 for production)
+ * @param {number} offset — starting row (0 = first page)
+ * @returns {Array<{barcode, scanned_at, products: {name, brand, nutriscore, nova_group}}>}
  */
-export async function getUserScanHistory(userEmail = null, limit = 100) {
+export async function getUserScanHistory(userEmail = null, limit = 20, offset = 0) {
   const client = getClient();
   if (!client) return [];
 
   try {
-    console.log(`📊 [Supabase:Scans] READ → Fetching scan history (user: ${userEmail || 'all'}, limit: ${limit})...`);
+    console.log(`📊 [Supabase:Scans] READ → Scan history (user: ${userEmail || 'all'}, limit: ${limit}, offset: ${offset})...`);
+
     let query = client
       .from('user_scans')
-      .select('barcode, scanned_at')
+      .select('barcode, scanned_at, products(name, brand, nutriscore, nova_group)')
       .order('scanned_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
 
-    if (userEmail) {
-      query = query.eq('user_email', userEmail);
-    }
+    if (userEmail) query = query.eq('user_email', userEmail);
 
     const { data, error } = await query;
+
     if (error) {
-      console.warn(`📊 [Supabase:Scans] ⚠️ Fetch scan history failed: ${error.message}`);
+      console.warn(`📊 [Supabase:Scans] ⚠️ Fetch failed: ${error.message}`);
       return [];
     }
-    console.log(`📊 [Supabase:Scans] ✅ Retrieved ${data?.length || 0} scan records`);
+
+    console.log(`📊 [Supabase:Scans] ✅ Retrieved ${data?.length || 0} scan records (page offset ${offset})`);
     return data || [];
   } catch (e) {
-    console.error(`📊 [Supabase:Scans] ❌ Fetch scan history error: ${e.message}`);
+    console.error(`📊 [Supabase:Scans] ❌ Error: ${e.message}`);
     return [];
   }
 }
 
-// ─── User Contributions ──────────────────────
+/**
+ * Get the total scan count for a user — server-side COUNT, no data downloaded.
+ * Use this for displaying "Total Scans: 142" in the Profile screen instead
+ * of fetching the full history array and calling .length.
+ *
+ * @param {string|null} userEmail
+ * @returns {number}
+ */
+export async function getScanCount(userEmail = null) {
+  const client = getClient();
+  if (!client) return 0;
 
+  try {
+    let query = client
+      .from('user_scans')
+      .select('id', { count: 'exact', head: true });
+
+    if (userEmail) query = query.eq('user_email', userEmail);
+
+    const { count, error } = await query;
+    if (error) return 0;
+
+    console.log(`📊 [Supabase:Scans] COUNT → ${count} scans for "${userEmail || 'all'}"`);
+    return count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// ─── User Contributions ───────────────────────────────────────────────────────
+
+/**
+ * Log an OCR/image contribution to user_contributions.
+ *
+ * RLS policy requires contributor_email = auth.email().
+ * Bug #4 fix: if email is missing on payload (race condition on first launch),
+ * we resolve it from the live JWT before the insert.
+ */
 export async function logUserContribution(payload) {
   const client = getClient();
   if (!client) {
-    console.warn(`🤝 [Supabase:Contributions] ⚠️ Client not configured — skipping contribution log`);
+    console.warn(`🤝 [Supabase:Contributions] ⚠️ Client not configured — skipping`);
     return;
   }
 
   try {
-    // Bug #4: If contributorEmail is empty (race condition on first launch before session
-    // restore completes), fall back to the real authenticated email from the JWT.
-    // This ensures auth.email() = contributor_email so RLS never blocks the insert.
     let contributorEmail = payload.contributorEmail || null;
     if (!contributorEmail) {
       try {
@@ -88,19 +144,19 @@ export async function logUserContribution(payload) {
       }
     }
 
-    console.log(`🤝 [Supabase:Contributions] WRITE → Logging OCR contribution for "${payload.barcode}" (email: ${contributorEmail || 'none'})...`);
+    console.log(`🤝 [Supabase:Contributions] WRITE → Logging contribution for "${payload.barcode}" (email: ${contributorEmail || 'none'})...`);
     const { error } = await client.from('user_contributions').insert([{
-      barcode: payload.barcode,
-      product_name: payload.productName || null,
-      contributor_email: contributorEmail,
-      raw_ocr_text: payload.rawOcr || null,
-      gemini_filtered_data: payload.filteredData || null,
+      barcode:              payload.barcode,
+      product_name:         payload.productName        || null,
+      contributor_email:    contributorEmail,
+      raw_ocr_text:         payload.rawOcr             || null,
+      gemini_filtered_data: payload.filteredData       || null,
       front_photo_uploaded: !!payload.frontUploaded,
-      back_photo_ocrd: !!payload.backOcrd,
-      ingredients: payload.ingredients || null,
-      status: 'approved' // auto-approve logic
+      back_photo_ocrd:      !!payload.backOcrd,
+      ingredients:          payload.ingredients        || null,
+      status:               'approved',
     }]);
-    
+
     if (error) logError('Supabase Contribution Insert', error, { barcode: payload.barcode });
     else console.log(`🤝 [Supabase:Contributions] ✅ Contribution logged for "${payload.barcode}"`);
   } catch (e) {
@@ -108,44 +164,47 @@ export async function logUserContribution(payload) {
   }
 }
 
-// ─── Fetch Contributions ─────────────────────
-
 /**
- * Get all contributions (optionally filtered by email).
- * Returns latest-first.
+ * Get all contributions for a user, latest-first.
+ * Supports pagination via offset.
+ *
+ * @param {string|null} email
+ * @param {number} limit
+ * @param {number} offset
  */
-export async function getUserContributions(email = null, limit = 50) {
+export async function getUserContributions(email = null, limit = 20, offset = 0) {
   const client = getClient();
   if (!client) return [];
 
   try {
-    console.log(`🤝 [Supabase:Contributions] READ → Fetching contributions (email: ${email || 'all'}, limit: ${limit})...`);
+    console.log(`🤝 [Supabase:Contributions] READ → (email: ${email || 'all'}, limit: ${limit}, offset: ${offset})...`);
+
     let query = client
       .from('user_contributions')
       .select('id, barcode, product_name, contributor_email, ingredients, gemini_filtered_data, front_photo_uploaded, back_photo_ocrd, created_at')
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
 
-    if (email) {
-      // Strictly include only contributions matching this email
-      query = query.eq('contributor_email', email);
-    }
+    if (email) query = query.eq('contributor_email', email);
 
     const { data, error } = await query;
     if (error) {
       console.warn(`🤝 [Supabase:Contributions] ⚠️ Fetch failed: ${error.message}`);
       return [];
     }
+
     console.log(`🤝 [Supabase:Contributions] ✅ Retrieved ${data?.length || 0} contributions`);
     return data || [];
   } catch (e) {
-    console.error(`🤝 [Supabase:Contributions] ❌ Fetch error: ${e.message}`);
+    console.error(`🤝 [Supabase:Contributions] ❌ Error: ${e.message}`);
     return [];
   }
 }
 
 /**
- * Get count of contributions (optionally filtered by email).
+ * Server-side COUNT of contributions — no full download.
+ * @param {string|null} email
+ * @returns {number}
  */
 export async function getContributionCount(email = null) {
   const client = getClient();
@@ -156,9 +215,7 @@ export async function getContributionCount(email = null) {
       .from('user_contributions')
       .select('id', { count: 'exact', head: true });
 
-    if (email) {
-      query = query.eq('contributor_email', email);
-    }
+    if (email) query = query.eq('contributor_email', email);
 
     const { count, error } = await query;
     if (error) return 0;

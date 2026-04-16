@@ -12,7 +12,22 @@ import { colors } from './src/theme/colors';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 
+// Offline Queue Handlers
+import { startConnectivityWatchdog, registerQueueHandlers } from './src/services/connectivity';
+import { saveProduct } from './src/services/supabase';
+import { contributeToOFF } from './src/services/openfoodfacts';
+
 export default function App() {
+  React.useEffect(() => {
+    // Register the tasks the offline queue should execute when connection restores
+    registerQueueHandlers({
+      product_save:     (payload) => saveProduct(payload),
+      off_contribution: (payload) => contributeToOFF(payload, null, {}),
+    });
+    // Start listening to network changes
+    startConnectivityWatchdog();
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <BottomSheetModalProvider>

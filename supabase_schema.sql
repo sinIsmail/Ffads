@@ -291,4 +291,56 @@ CREATE POLICY "anon_all" ON threshold_limits FOR ALL USING (true) WITH CHECK (tr
 --   sync_queue          — offline job queue
 --   ingredients_knowledge — Dynamic global cache backed by AI
 -- ============================================
--- hihkhjbhbjkbnmhbjh,
+
+-- ─── GIN index for JSONB nutrition queries (Phase 4) ────────────────────────
+-- Enables fast queries like: WHERE (nutrition->>'sugar')::numeric > 10
+CREATE INDEX IF NOT EXISTS idx_products_nutrition_gin   ON products USING GIN (nutrition);
+CREATE INDEX IF NOT EXISTS idx_products_ingredients_gin ON products USING GIN (ingredients);
+
+-- ─── AI processing status lock (Phase 1) ────────────────────────────────────
+ALTER TABLE product_ai_data ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'done';
+CREATE INDEX IF NOT EXISTS idx_product_ai_status ON product_ai_data(status);
+
+-- ─── Unique constraint for product_images (fixes duplicate upsert) ──────────
+ALTER TABLE product_images ADD CONSTRAINT uq_product_images_barcode_type 
+  UNIQUE (barcode, image_type);
+
+-- ─── Per-user isolation: link user_scans to real auth.users UUIDs ────────────
+-- Adds user_id column so every scan row can be joined to auth.users in SQL Editor
+ALTER TABLE user_scans ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+CREATE INDEX IF NOT EXISTS idx_user_scans_user_id ON user_scans(user_id);
+
+-- ─── Tighten user_scans RLS (replace open anon_all with user-scoped access) ──
+-- Previously any user with the anon key could read ALL other users' scan history.
+-- Now each user can only see their own rows.
+DROP POLICY IF EXISTS "anon_all" ON user_scans;
+
+-- Logged-in users see only their own scans; guest users see nothing
+CREATE POLICY "users_own_scans_select" ON user_scans
+  FOR SELECT USING (user_email = auth.email() OR auth.email() IS NULL);
+
+-- Insert remains open — scanner fires before auth state is guaranteed to be loaded
+CREATE POLICY "users_insert_scan" ON user_scans
+  FOR INSERT WITH CHECK (true);
+
+-- ─── Admin SQL: Run these in Supabase SQL Editor to see all data ─────────────
+-- (SQL Editor runs as postgres superuser — RLS is bypassed automatically)
+--
+-- All users and their scan counts:
+--   SELECT u.email, COUNT(s.id) AS scans
+--   FROM auth.users u
+--   LEFT JOIN user_scans s ON s.user_id = u.id
+--   GROUP BY u.email ORDER BY scans DESC;
+--
+-- All products with AI scores:
+--   SELECT p.name, p.brand, p.barcode, ai.ai_score, ai.animal_content_flag
+--   FROM products p LEFT JOIN product_ai_data ai ON ai.barcode = p.barcode
+--   ORDER BY ai.ai_score ASC;
+--
+-- All ingredients ever analyzed:
+--   SELECT name, health_risk_score, is_vegan, is_ultra_processed, detailed_analyzed_at
+--   FROM ingredients_knowledge ORDER BY health_risk_score DESC;
+--
+-- All user contributions:
+--   SELECT contributor_email, product_name, barcode, created_at, front_photo_uploaded
+--   FROM user_contributions ORDER BY created_at DESC;

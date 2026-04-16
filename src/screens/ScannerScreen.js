@@ -48,6 +48,16 @@ export default function ScannerScreen({ navigation }) {
   const toastTimeoutRef = useRef(null);
   const toastAnim = useRef(new Animated.Value(-100)).current;
   const scanLineAnim = useRef(new Animated.Value(0)).current;
+  // Bug Fix: Guard all async state updates — never call setState on an unmounted component
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // Bug Fix: Clear pending toast timer on unmount to prevent memory leaks
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
 
   // Animate scan line
   useEffect(() => {
@@ -64,6 +74,7 @@ export default function ScannerScreen({ navigation }) {
 
   // Show toast (replaces Alert.alert)
   const showToast = useCallback((message, type = 'success', duration = 3000) => {
+    if (!isMountedRef.current) return; // Guard: don't update if unmounted
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToast({ message, type });
 
@@ -75,11 +86,12 @@ export default function ScannerScreen({ navigation }) {
     }).start();
 
     toastTimeoutRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return; // Guard: component may have unmounted during timeout
       Animated.timing(toastAnim, {
         toValue: -100,
         duration: 200,
         useNativeDriver: true,
-      }).start(() => setToast(null));
+      }).start(() => { if (isMountedRef.current) setToast(null); });
     }, duration);
   }, [toastAnim]);
 
@@ -122,7 +134,10 @@ export default function ScannerScreen({ navigation }) {
     setTimeout(() => {
       cooldownRef.current = false;
     }, 3000);
-  }, [isValidBarcode]);
+  // Bug Fix: isValidBarcode is a stable import, not state/prop — removed from dep array
+  // to prevent unnecessary callback recreation on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processBarcode]);
 
   // Process barcode through product.service
   const processBarcode = useCallback(async (barcode) => {
@@ -208,9 +223,9 @@ export default function ScannerScreen({ navigation }) {
   const handleOCRSubmit = async (photos, productName) => {
     try {
       const allKeys = getAllGeminiKeys(userPrefs);
-    console.log(`\n📷 ═══════════════════════════════════════════`);
-    console.log(`📷 [Scanner:OCR] START — ${allKeys.length} key(s) available | model: ${userPrefs.geminiModel}`);
-    console.log(`📷 ═══════════════════════════════════════════`);
+      console.log(`\n📷 ═══════════════════════════════════════════`);
+      console.log(`📷 [Scanner:OCR] START — ${allKeys.length} key(s) available | model: ${userPrefs.geminiModel}`);
+      console.log(`📷 ═══════════════════════════════════════════`);
 
       // Call Gemini Vision to extract data
       const ocrData = await processProductPhotos(
@@ -236,60 +251,72 @@ export default function ScannerScreen({ navigation }) {
       };
 
       productDispatch({ type: 'ADD_PRODUCT', payload: finalProduct });
-      setOcrVisible(false);
-      setPendingProduct(null);
-      setBarcodeInput('');
+      if (isMountedRef.current) {
+        setOcrVisible(false);
+        setPendingProduct(null);
+        setBarcodeInput('');
+      }
 
-      // Persist to Supabase and OFF in background (non-blocking)
-      saveProduct(finalProduct).then(async r => {
-        if (r?.success) {
-          console.log(`📷 [Scanner:OCR] ✅ Product saved to Supabase: "${finalProduct.name}" (${finalProduct.barcode})`);
-          recordScan(finalProduct.barcode, userPrefs.email || null);
-          
-          let frontUploaded = false;
+      // Bug Fix: Replace .then() chain with async IIFE — no state updates inside,
+      // so safe even if the user navigates away before this resolves.
+      (async () => {
+        try {
+          const r = await saveProduct(finalProduct);
+          if (r?.success) {
+            console.log(`📷 [Scanner:OCR] ✅ Product saved to Supabase: "${finalProduct.name}" (${finalProduct.barcode})`);
+            // recordScan has FK on products(barcode), must run after saveProduct
+            await recordScan(finalProduct.barcode, userPrefs.email || null).catch(e =>
+              logError('Scanner OCR recordScan', e, { barcode: finalProduct.barcode })
+            );
 
-          // Attempt Open Food Facts Upload invisibly in background if configured!
-          const offCreds = getOFFCredentials(userPrefs);
-          if (isOFFConfigured(offCreds)) {
-            console.log(`📷 [Scanner:OCR] OFF configured — attempting background upload to Open Food Facts...`);
-            const offPayload = {
-              barcode: finalProduct.barcode,
-              name: finalProduct.name,
-              brand: finalProduct.brand,
-              ingredientsRaw: finalProduct.ingredientsRaw,
-              nutrition: finalProduct.nutrition,
-            };
-            
-            // In ScannerScreen we only have front and back photos
-            const imagesToUpload = [
-              photos.front?.base64 || null, 
-              null, // no separate nutrition photo
-              photos.back?.base64  || null  // back photo acts as ingredients
-            ];
+            let frontUploaded = false;
 
-            const offResult = await contributeToOFF(offPayload, imagesToUpload, offCreds);
-            if (offResult.success) {
-              console.log(`📷 [Scanner:OCR] ✅ Background OFF upload successful`);
-              frontUploaded = !!photos.front;
-            } else {
-              console.warn(`📷 [Scanner:OCR] ⚠️ Background OFF upload failed: ${offResult.error}`);
+            // Attempt Open Food Facts upload in background if configured
+            const offCreds = getOFFCredentials(userPrefs);
+            if (isOFFConfigured(offCreds)) {
+              console.log(`📷 [Scanner:OCR] OFF configured — attempting background upload to Open Food Facts...`);
+              try {
+                const offPayload = {
+                  barcode: finalProduct.barcode,
+                  name:    finalProduct.name,
+                  brand:   finalProduct.brand,
+                  ingredientsRaw: finalProduct.ingredientsRaw,
+                  nutrition:      finalProduct.nutrition,
+                };
+                const imagesToUpload = [
+                  photos.front?.base64 || null,
+                  null, // no separate nutrition photo
+                  photos.back?.base64  || null,
+                ];
+                const offResult = await contributeToOFF(offPayload, imagesToUpload, offCreds);
+                if (offResult.success) {
+                  console.log(`📷 [Scanner:OCR] ✅ Background OFF upload successful`);
+                  frontUploaded = !!photos.front;
+                } else {
+                  console.warn(`📷 [Scanner:OCR] ⚠️ Background OFF upload failed: ${offResult.error}`);
+                }
+              } catch (offErr) {
+                logError('Scanner OCR OFF Upload', offErr, { barcode: finalProduct.barcode });
+              }
             }
-          }
 
-          logUserContribution({
-             barcode: finalProduct.barcode,
-             productName: finalProduct.name,
-             contributorEmail: userPrefs.email || null,
-             rawOcr: ocrData.rawOCRText,
-             filteredData: ocrData,
-             ingredients: finalProduct.ingredients || [],
-             frontUploaded: frontUploaded,
-             backOcrd: true
-          });
-        } else if (r?.error) {
-          logError('Scanner OCR Supabase Save', r.error, { barcode: finalProduct.barcode });
+            logUserContribution({
+              barcode:          finalProduct.barcode,
+              productName:      finalProduct.name,
+              contributorEmail: userPrefs.email || null,
+              rawOcr:          ocrData.rawOCRText,
+              filteredData:    ocrData,
+              ingredients:     finalProduct.ingredients || [],
+              frontUploaded:   frontUploaded,
+              backOcrd:        true,
+            });
+          } else if (r?.error) {
+            logError('Scanner OCR Supabase Save', r.error, { barcode: finalProduct.barcode });
+          }
+        } catch (bgErr) {
+          logError('Scanner OCR Background Chain', bgErr, { barcode: finalProduct.barcode });
         }
-      }).catch(e => logError('Scanner OCR Async Chain', e, { barcode: finalProduct.barcode }));
+      })();
 
       showToast(`✨ OCR Success: ${finalProduct.name}`, 'success');
       logEvent('Product_OCR_Scanned', { barcode: finalProduct.barcode });
@@ -297,11 +324,13 @@ export default function ScannerScreen({ navigation }) {
 
     } catch (error) {
       logError('Scanner Main OCR Flow', error, { originalName: pendingProduct?.name });
-      showToast(`❌ OCR failed: ${error.message?.substring(0, 80) || 'Unknown error'}`, 'error');
-      // Failsafe (Partial Failure): add without OCR data so user can view/edit the product
-      productDispatch({ type: 'ADD_PRODUCT', payload: pendingProduct });
-      setOcrVisible(false);
-      setPendingProduct(null);
+      if (isMountedRef.current) {
+        showToast(`❌ OCR failed: ${error.message?.substring(0, 80) || 'Unknown error'}`, 'error');
+        // Failsafe (Partial Failure): add without OCR data so user can still view the product
+        productDispatch({ type: 'ADD_PRODUCT', payload: pendingProduct });
+        setOcrVisible(false);
+        setPendingProduct(null);
+      }
     }
   };
 

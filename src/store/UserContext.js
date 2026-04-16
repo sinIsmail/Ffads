@@ -5,6 +5,8 @@ import { setSupabaseCredentials, getSupabaseClient } from '../services/supabase'
 import { syncThresholds } from '../utils/thresholds';
 
 const USER_PREFS_KEY = '@ffads_user_prefs';
+// Per-user isolation: scoped key prevents User B from seeing User A's allergies/keys
+const getUserPrefsKey = (userId) => userId ? `@ffads_user_prefs_${userId}` : USER_PREFS_KEY;
 
 const defaultPrefs = {
   allergies: [],
@@ -27,6 +29,8 @@ const defaultPrefs = {
   fullName: '',
   aiEnabled: false,
   loaded: false,
+  // Production: true when JWT refresh fails — triggers login redirect
+  sessionExpired: false,
 };
 
 function reducer(state, action) {
@@ -108,10 +112,14 @@ function reducer(state, action) {
     }
     case 'SET_EMAIL':
       console.log(`👤 [UserStore] SET_EMAIL → "${action.payload || 'cleared'}"`);
-      return { ...state, email: action.payload || '' };
+      return { ...state, email: action.payload || '', sessionExpired: false };
     case 'SET_FULL_NAME':
       console.log(`👤 [UserStore] SET_FULL_NAME → "${action.payload || 'cleared'}"`);
       return { ...state, fullName: action.payload || '' };
+    // Production fix: JWT expired and auto-refresh failed — force to Login screen
+    case 'SESSION_EXPIRED':
+      console.warn(`👤 [UserStore] SESSION_EXPIRED → Clearing identity, navigator will redirect to Login`);
+      return { ...state, email: '', fullName: '', sessionExpired: true };
     default:
       return state;
   }
@@ -123,6 +131,8 @@ export function UserProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, defaultPrefs);
   // Bug #2: Track whether we've already attempted session restore so we only do it once
   const sessionCheckedRef = React.useRef(false);
+  // Per-user isolation: track which storage key is currently active
+  const currentStorageKeyRef = React.useRef(USER_PREFS_KEY);
 
   // ── Load prefs from AsyncStorage on mount (with 5s Timeout) ──
   useEffect(() => {
@@ -162,13 +172,15 @@ export function UserProvider({ children }) {
   useEffect(() => {
     if (!state.loaded) return;
     const { loaded, ...prefs } = state;
-    console.log(`👤 [UserStore] PERSIST → Saving prefs to AsyncStorage (email: ${prefs.email || 'none'}, model: ${prefs.geminiModel})`);
-    AsyncStorage.setItem(USER_PREFS_KEY, JSON.stringify(prefs)).catch(() => {});
-    
+    // Per-user isolation: always save to the CURRENT user-scoped key
+    const storageKey = currentStorageKeyRef.current;
+    console.log(`👤 [UserStore] PERSIST → Saving prefs to "${storageKey}" (email: ${prefs.email || 'none'}, model: ${prefs.geminiModel})`);
+    AsyncStorage.setItem(storageKey, JSON.stringify(prefs)).catch(() => {});
+
     // Propagate dynamically loaded keys to singleton services
     const supaKeys = getSupabaseCredentials(state);
     setSupabaseCredentials(supaKeys.url, supaKeys.key);
-    
+
     // Sync fallback FSSAI/WHO macro thresholds
     syncThresholds();
   }, [state]);
@@ -188,37 +200,99 @@ export function UserProvider({ children }) {
       try {
         console.log(`👤 [UserStore] SESSION RESTORE → Checking for saved Supabase session...`);
         const { data: { session }, error } = await client.auth.getSession();
+
         if (error) {
           console.warn(`👤 [UserStore] SESSION RESTORE → getSession error: ${error.message}`);
+          return; // Network down — stay in current state, try again next launch
+        }
+
+        if (!session) {
+          console.log(`👤 [UserStore] SESSION RESTORE → No session found (guest mode)`);
           return;
         }
-        if (session?.user) {
-          const email = session.user.email || '';
-          const name = session.user.user_metadata?.full_name || '';
-          console.log(`👤 [UserStore] SESSION RESTORE → ✅ Active session found for "${email}"`);
-          // Only overwrite if not already set (avoid clearing a just-logged-in value)
-          if (!state.email) dispatch({ type: 'SET_EMAIL', payload: email });
-          if (!state.fullName && name) dispatch({ type: 'SET_FULL_NAME', payload: name });
-        } else {
-          console.log(`👤 [UserStore] SESSION RESTORE → No active session found (guest mode)`);
+
+        // Session exists — check if the token is still valid
+        // (It may be expired after the user was offline for > 1 hour)
+        const tokenExpiresAt = session.expires_at; // Unix timestamp in seconds
+        const nowSecs        = Math.floor(Date.now() / 1000);
+        const isExpired      = tokenExpiresAt && nowSecs > tokenExpiresAt;
+
+        if (isExpired) {
+          console.warn(`👤 [UserStore] SESSION RESTORE → Token expired (exp: ${tokenExpiresAt}, now: ${nowSecs}). Attempting refresh...`);
+          try {
+            const { data: refreshData, error: refreshError } = await client.auth.refreshSession();
+            if (refreshError || !refreshData?.session) {
+              // Refresh failed (offline or revoked) — force clean sign-out
+              console.error(`👤 [UserStore] SESSION RESTORE → ❌ Refresh FAILED: ${refreshError?.message || 'no session'}`);
+              await client.auth.signOut().catch(() => {}); // best-effort local clear
+              dispatch({ type: 'SESSION_EXPIRED' });
+              return;
+            }
+            // Token refreshed — use the new session
+            const refreshedUser = refreshData.session.user;
+            console.log(`👤 [UserStore] SESSION RESTORE → ✅ Token refreshed for "${refreshedUser.email}"`);
+            if (!state.email) dispatch({ type: 'SET_EMAIL', payload: refreshedUser.email || '' });
+            if (!state.fullName && refreshedUser.user_metadata?.full_name) {
+              dispatch({ type: 'SET_FULL_NAME', payload: refreshedUser.user_metadata.full_name });
+            }
+            return;
+          } catch (refreshErr) {
+            console.error(`👤 [UserStore] SESSION RESTORE → ❌ Refresh threw: ${refreshErr.message}`);
+            dispatch({ type: 'SESSION_EXPIRED' });
+            return;
+          }
         }
+
+        // Token is still valid
+        const email = session.user.email || '';
+        const name  = session.user.user_metadata?.full_name || '';
+        console.log(`👤 [UserStore] SESSION RESTORE → ✅ Valid session for "${email}"`);
+        if (!state.email) dispatch({ type: 'SET_EMAIL', payload: email });
+        if (!state.fullName && name) dispatch({ type: 'SET_FULL_NAME', payload: name });
+
       } catch (e) {
-        console.warn(`👤 [UserStore] SESSION RESTORE → Failed: ${e.message}`);
+        console.warn(`👤 [UserStore] SESSION RESTORE → Unexpected error: ${e.message}`);
       }
     })();
 
     // Token Lifecycle Listener: watch for expirations, logouts, or explicit sign-ins
     let subscription;
     try {
-      const resp = client.auth.onAuthStateChange((event, session) => {
+      const resp = client.auth.onAuthStateChange(async (event, session) => {
         console.log(`👤 [UserStore] AUTH STATE EVENT → ${event}`);
+
         if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
+          // Per-user isolation: on logout, wipe user-scoped key and reset to anonymous defaults
+          console.log(`👤 [UserStore] SIGNED_OUT → Resetting to anonymous prefs key`);
+          currentStorageKeyRef.current = USER_PREFS_KEY;
           dispatch({ type: 'SET_EMAIL', payload: '' });
           dispatch({ type: 'SET_FULL_NAME', payload: '' });
+
         } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           if (session?.user) {
-            dispatch({ type: 'SET_EMAIL', payload: session.user.email || '' });
-            dispatch({ type: 'SET_FULL_NAME', payload: session.user.user_metadata?.full_name || '' });
+            const userId = session.user.id;
+            const email  = session.user.email || '';
+            const name   = session.user.user_metadata?.full_name || '';
+
+            // Per-user isolation: switch to user-scoped storage key and load that user's prefs
+            const userKey = getUserPrefsKey(userId);
+            if (userKey !== currentStorageKeyRef.current) {
+              console.log(`👤 [UserStore] SIGNED_IN → Switching storage key to "${userKey}"`);
+              currentStorageKeyRef.current = userKey;
+              try {
+                const raw = await AsyncStorage.getItem(userKey);
+                const savedPrefs = raw ? JSON.parse(raw) : {};
+                console.log(`👤 [UserStore] Loaded user-scoped prefs for "${email}" (keys: ${savedPrefs.geminiApiKeys?.length || 0})`);
+                dispatch({ type: 'SET_PREFS', payload: { ...savedPrefs, email, fullName: name } });
+              } catch (e) {
+                console.warn(`👤 [UserStore] Could not load user-scoped prefs: ${e.message}`);
+                dispatch({ type: 'SET_EMAIL', payload: email });
+                dispatch({ type: 'SET_FULL_NAME', payload: name });
+              }
+            } else {
+              dispatch({ type: 'SET_EMAIL', payload: email });
+              if (name) dispatch({ type: 'SET_FULL_NAME', payload: name });
+            }
           }
         }
       });
@@ -233,7 +307,7 @@ export function UserProvider({ children }) {
   }, [state.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <UserContext.Provider value={{ userPrefs: state, userDispatch: dispatch }}>
+    <UserContext.Provider value={{ userPrefs: state, userDispatch: dispatch, sessionExpired: state.sessionExpired }}>
       {children}
     </UserContext.Provider>
   );

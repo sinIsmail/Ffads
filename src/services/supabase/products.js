@@ -1,8 +1,9 @@
 // Ffads — Supabase Products (CRUD for products + AI data)
+// Production v2 — Fixed saveProductAIData columns + AI concurrency lock
 
 import { getClient } from './client';
 
-// ─── Products ────────────────────────────────
+// ─── Products ─────────────────────────────────────────────────────────────────
 
 export async function saveProduct(product) {
   const client = getClient();
@@ -12,7 +13,7 @@ export async function saveProduct(product) {
   }
 
   try {
-    console.log(`💾 [Supabase:Products] WRITE → Upserting product "${product.name}" (${product.barcode}) into products table...`);
+    console.log(`💾 [Supabase:Products] WRITE → Upserting product "${product.name}" (${product.barcode})...`);
     const { data, error } = await client
       .from('products')
       .upsert({
@@ -39,6 +40,12 @@ export async function saveProduct(product) {
   }
 }
 
+/**
+ * Save AI analysis result for a product.
+ * 
+ * FIXED (Bug #1): Previous version wrote wrong columns (classification, ai_insight).
+ * Now writes correct schema columns: animal_content_flag, harmful_chemicals, ai_score, etc.
+ */
 export async function saveProductAIData(barcode, aiData, model, mode) {
   const client = getClient();
   if (!client) {
@@ -47,19 +54,24 @@ export async function saveProductAIData(barcode, aiData, model, mode) {
   }
 
   try {
-    console.log(`💾 [Supabase:AI] WRITE → Saving AI analysis result for "${barcode}" (model: ${model}, mode: ${mode})...`);
-    const { data, error } = await client
+    console.log(`💾 [Supabase:AI] WRITE → Saving AI result for "${barcode}" (model: ${model}, mode: ${mode})...`);
+    const { error } = await client
       .from('product_ai_data')
       .upsert({
-        barcode: barcode,
-        classification: aiData.classification,
-        ai_insight: aiData.aiInsight,
-        gemini_model: model,
-        analysis_mode: mode,
+        barcode,
+        animal_content_flag:    aiData.animalContentFlag    ?? false,
+        animal_content_details: aiData.animalContentDetails ?? null,
+        harmful_chemicals:      aiData.harmfulChemicals     ?? [],
+        ai_score:               aiData.aiScore              ?? null,
+        ai_recommendation:      aiData.aiRecommendation     ?? null,
+        gemini_model:           model                       ?? null,
+        analysis_mode:          mode                        ?? null,
+        status:                 'done',
+        analyzed_at:            new Date().toISOString(),
       }, { onConflict: 'barcode' });
 
     if (error) throw error;
-    console.log(`💾 [Supabase:AI] ✅ AI data cached for "${barcode}"`);
+    console.log(`💾 [Supabase:AI] ✅ AI data cached correctly for "${barcode}"`);
     return { success: true };
   } catch (error) {
     console.error(`💾 [Supabase:AI] ❌ WRITE FAILED for "${barcode}": ${error.message}`);
@@ -67,6 +79,34 @@ export async function saveProductAIData(barcode, aiData, model, mode) {
   }
 }
 
+/**
+ * Set the AI analysis status for a product barcode.
+ * Used as a concurrency lock to prevent 50 simultaneous Gemini calls for the same product.
+ * 
+ * @param {string} barcode
+ * @param {'processing'|'done'|'failed'} status
+ */
+export async function setAIProcessingStatus(barcode, status) {
+  const client = getClient();
+  if (!client) return false;
+
+  try {
+    const { error } = await client
+      .from('product_ai_data')
+      .upsert({ barcode, status }, { onConflict: 'barcode' });
+
+    if (error) {
+      console.warn(`💾 [Supabase:AI] ⚠️ Failed to set status="${status}" for "${barcode}": ${error.message}`);
+      return false;
+    }
+    console.log(`💾 [Supabase:AI] 🔒 Status set → "${barcode}" = "${status}"`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Read Operations ──────────────────────────────────────────────────────────
 
 export async function getProducts(limit = 100) {
   const client = getClient();
@@ -107,37 +147,40 @@ export async function getProductByBarcode(barcode) {
 }
 
 /**
- * Fetch a complete product combining basic data (products) and AI insights (product_ai_data)
+ * Fetch a complete product: base data + AI insights merged.
+ * Also reads harmful_chemicals which was previously missing from the select.
  */
 export async function getCompleteProduct(barcode) {
   const client = getClient();
   if (!client) return null;
-  
+
   try {
     const baseProduct = await getProductByBarcode(barcode);
     if (!baseProduct) return null;
 
     const { data: aiData, error: aiError } = await client
       .from('product_ai_data')
-      .select('animal_content_flag, animal_content_details, ai_score, ai_recommendation')
+      .select('animal_content_flag, animal_content_details, harmful_chemicals, ai_score, ai_recommendation, status')
       .eq('barcode', barcode)
       .single();
 
-    if (aiError || !aiData) {
-      return baseProduct; // Return just the base product if no AI data
+    // If no AI data, or AI data is still processing, return base product only
+    if (aiError || !aiData || aiData.status === 'processing') {
+      return baseProduct;
     }
 
     return {
       ...baseProduct,
       analyzed: true,
       aiData: {
-        animalContentFlag: aiData.animal_content_flag,
+        animalContentFlag:    aiData.animal_content_flag,
         animalContentDetails: aiData.animal_content_details,
-        aiScore: aiData.ai_score,
-        aiRecommendation: aiData.ai_recommendation
-      }
+        harmfulChemicals:     aiData.harmful_chemicals || [],
+        aiScore:              aiData.ai_score,
+        aiRecommendation:     aiData.ai_recommendation,
+      },
     };
-  } catch (err) {
+  } catch {
     return null;
   }
 }
@@ -147,7 +190,7 @@ export async function deleteProduct(barcode) {
   if (!client) return false;
 
   try {
-    console.log(`💾 [Supabase:Products] DELETE → Removing "${barcode}" from products table...`);
+    console.log(`💾 [Supabase:Products] DELETE → Removing "${barcode}"...`);
     const { error } = await client.from('products').delete().eq('barcode', barcode);
     if (!error) console.log(`💾 [Supabase:Products] ✅ Deleted "${barcode}"`);
     return !error;
@@ -156,21 +199,21 @@ export async function deleteProduct(barcode) {
   }
 }
 
-// ─── Helpers ─────────────────────────────────
+// ─── Internal Helper ──────────────────────────────────────────────────────────
 
 function normalizeProduct(row) {
   return {
-    id: row.id,
-    barcode: row.barcode,
-    name: row.name,
-    brand: row.brand,
-    category: row.category,
-    ingredients: row.ingredients || [],
+    id:             row.id,
+    barcode:        row.barcode,
+    name:           row.name,
+    brand:          row.brand,
+    category:       row.category,
+    ingredients:    row.ingredients    || [],
     ingredientsRaw: row.ingredients_raw,
-    nutrition: row.nutrition || {},
-    source: row.source,
-    nutriscore: row.nutriscore,
-    novaGroup: row.nova_group,
-    scannedAt: row.scanned_at,
+    nutrition:      row.nutrition      || {},
+    source:         row.source,
+    nutriscore:     row.nutriscore,
+    novaGroup:      row.nova_group,
+    scannedAt:      row.scanned_at,
   };
 }
