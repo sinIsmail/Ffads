@@ -1,124 +1,227 @@
-// Ffads — User Preferences Context (with in-app API key storage)
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useReducer, useRef } from 'react';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setSupabaseCredentials, getSupabaseClient } from '../services/supabase';
+import { getSupabaseClient } from '../services/supabase';
 import { syncThresholds } from '../utils/thresholds';
+import {
+  ensureProviderRegistry,
+  getProviderById,
+  reindexProviders,
+  sortProvidersByPriority,
+} from '../services/ai/providerPresets';
 
 const USER_PREFS_KEY = '@ffads_user_prefs';
-// Per-user isolation: scoped key prevents User B from seeing User A's allergies/keys
-const getUserPrefsKey = (userId) => userId ? `@ffads_user_prefs_${userId}` : USER_PREFS_KEY;
+const getUserPrefsKey = (userId) => (userId ? `@ffads_user_prefs_${userId}` : USER_PREFS_KEY);
+
+const defaultRegistry = ensureProviderRegistry({});
 
 const defaultPrefs = {
   allergies: [],
   healthConditions: [],
   healthMode: 'relaxed',
   diet: 'omnivore',
-  geminiModel: 'gemini-2.5-flash',
   analysisMode: 'balanced',
-  // Gemini API keys (managed in API tab)
+  geminiModel: defaultRegistry.providers.find((provider) => provider.id === 'gemini')?.textModels?.[0] || 'gemini-2.5-flash',
   geminiApiKeys: [],
   geminiActiveKeyIndex: 0,
-  // Supabase credentials (managed in API tab)
-  supabaseUrl: '',
-  supabaseAnonKey: '',
-  // Open Food Facts credentials (managed in API tab)
+  providers: defaultRegistry.providers,
+  activeProviderId: defaultRegistry.activeProviderId,
   offUsername: '',
   offPassword: '',
-  // User identity (set on login / profile load)
+  offContactEmail: process.env.EXPO_PUBLIC_OFF_CONTACT_EMAIL || '',
   email: '',
   fullName: '',
   aiEnabled: false,
   loaded: false,
-  // Production: true when JWT refresh fails — triggers login redirect
   sessionExpired: false,
 };
+
+function migratePrefs(payload = {}) {
+  const registry = ensureProviderRegistry(payload);
+  const geminiProvider = getProviderById(registry.providers, 'gemini');
+  const geminiApiKeys = Array.isArray(payload.geminiApiKeys)
+    ? payload.geminiApiKeys.filter(Boolean)
+    : (payload.geminiApiKey ? [payload.geminiApiKey] : []);
+
+  const mergedGeminiKeys = [
+    ...(geminiProvider?.apiKeys || []),
+    ...geminiApiKeys.filter((key) => !geminiProvider?.apiKeys?.includes(key)),
+  ];
+
+  return {
+    ...defaultPrefs,
+    ...payload,
+    providers: registry.providers,
+    activeProviderId: registry.activeProviderId,
+    geminiModel: geminiProvider?.textModels?.[0] || payload.geminiModel || defaultPrefs.geminiModel,
+    geminiApiKeys: mergedGeminiKeys,
+    geminiActiveKeyIndex: Math.min(payload.geminiActiveKeyIndex || 0, Math.max(0, mergedGeminiKeys.length - 1)),
+  };
+}
+
+function updateProviderCollection(state, providerId, changes) {
+  const providers = state.providers.map((provider) => (
+    provider.id === providerId
+      ? { ...provider, ...changes }
+      : provider
+  ));
+
+  const registry = ensureProviderRegistry({ ...state, providers });
+  const geminiProvider = getProviderById(registry.providers, 'gemini');
+
+  return {
+    ...state,
+    providers: registry.providers,
+    activeProviderId: registry.activeProviderId,
+    geminiModel: geminiProvider?.textModels?.[0] || state.geminiModel,
+    geminiApiKeys: geminiProvider?.apiKeys || state.geminiApiKeys,
+  };
+}
+
+function moveProviderPriority(providers, providerId, direction) {
+  const ordered = sortProvidersByPriority(providers);
+  const fromIndex = ordered.findIndex((provider) => provider.id === providerId);
+  if (fromIndex < 0) return providers;
+
+  const delta = direction === 'up' ? -1 : 1;
+  const toIndex = fromIndex + delta;
+  if (toIndex < 0 || toIndex >= ordered.length) return providers;
+
+  const next = [...ordered];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  return reindexProviders(next);
+}
 
 function reducer(state, action) {
   switch (action.type) {
     case 'SET_PREFS':
-      console.log(`👤 [UserStore] SET_PREFS → Loading saved preferences`);
-      return { ...state, ...action.payload, loaded: true };
+      return { ...migratePrefs(action.payload), loaded: true };
+    case 'SET_PROVIDERS': {
+      const registry = ensureProviderRegistry({ ...state, providers: action.payload });
+      const geminiProvider = getProviderById(registry.providers, 'gemini');
+      return {
+        ...state,
+        providers: registry.providers,
+        activeProviderId: registry.activeProviderId,
+        geminiModel: geminiProvider?.textModels?.[0] || state.geminiModel,
+        geminiApiKeys: geminiProvider?.apiKeys || state.geminiApiKeys,
+      };
+    }
+    case 'UPDATE_PROVIDER':
+      return updateProviderCollection(state, action.payload.id, action.payload.changes || {});
+    case 'MOVE_PROVIDER_PRIORITY': {
+      const providers = moveProviderPriority(state.providers, action.payload.id, action.payload.direction);
+      const registry = ensureProviderRegistry({ ...state, providers });
+      return {
+        ...state,
+        providers: registry.providers,
+        activeProviderId: registry.activeProviderId,
+      };
+    }
+    case 'SET_ACTIVE_PROVIDER':
+      return { ...state, activeProviderId: action.payload };
     case 'TOGGLE_ALLERGY': {
       const exists = state.allergies.includes(action.payload);
-      console.log(`👤 [UserStore] TOGGLE_ALLERGY → "${action.payload}" ${exists ? 'REMOVED' : 'ADDED'}`);
       return {
         ...state,
         allergies: exists
-          ? state.allergies.filter((a) => a !== action.payload)
+          ? state.allergies.filter((value) => value !== action.payload)
           : [...state.allergies, action.payload],
       };
     }
     case 'SET_DIET':
-      console.log(`👤 [UserStore] SET_DIET → "${action.payload}"`);
       return { ...state, diet: action.payload };
-    case 'SET_GEMINI_MODEL':
-      console.log(`👤 [UserStore] SET_GEMINI_MODEL → "${action.payload}"`);
-      return { ...state, geminiModel: action.payload };
     case 'SET_ANALYSIS_MODE':
-      console.log(`👤 [UserStore] SET_ANALYSIS_MODE → "${action.payload}"`);
       return { ...state, analysisMode: action.payload };
+    case 'SET_GEMINI_MODEL':
+      return updateProviderCollection({
+        ...state,
+        geminiModel: action.payload,
+      }, 'gemini', {
+        textModels: action.payload ? [action.payload] : [],
+        textModel: action.payload || '',
+      });
     case 'SET_GEMINI_KEY':
-      // Legacy compat: if someone dispatches with a single string, wrap it
-      console.log(`👤 [UserStore] SET_GEMINI_KEY → ${action.payload ? '1 key set' : 'cleared'}`);
-      return { ...state, geminiApiKeys: action.payload ? [action.payload] : [], geminiActiveKeyIndex: 0 };
-    case 'SET_GEMINI_KEYS':
-      console.log(`👤 [UserStore] SET_GEMINI_KEYS → ${action.payload?.length || 0} keys`);
-      return { ...state, geminiApiKeys: action.payload || [], geminiActiveKeyIndex: 0 };
+      return updateProviderCollection({
+        ...state,
+        geminiApiKeys: action.payload ? [action.payload] : [],
+        geminiActiveKeyIndex: 0,
+      }, 'gemini', {
+        apiKeys: action.payload ? [action.payload] : [],
+        apiKey: action.payload || '',
+      });
+    case 'SET_GEMINI_KEYS': {
+      const nextKeys = (action.payload || []).filter(Boolean);
+      return updateProviderCollection({
+        ...state,
+        geminiApiKeys: nextKeys,
+        geminiActiveKeyIndex: 0,
+      }, 'gemini', {
+        apiKeys: nextKeys,
+        apiKey: nextKeys[0] || '',
+      });
+    }
     case 'ADD_GEMINI_KEY': {
-      const newKeys = [...(state.geminiApiKeys || []), action.payload].filter(Boolean);
-      console.log(`👤 [UserStore] ADD_GEMINI_KEY → Now ${newKeys.length} total keys`);
-      return { ...state, geminiApiKeys: newKeys };
+      const nextKeys = [...(state.geminiApiKeys || []), action.payload].filter(Boolean);
+      return updateProviderCollection({
+        ...state,
+        geminiApiKeys: nextKeys,
+      }, 'gemini', {
+        apiKeys: nextKeys,
+        apiKey: nextKeys[0] || '',
+      });
     }
     case 'REMOVE_GEMINI_KEY': {
-      const filtered = (state.geminiApiKeys || []).filter((_, i) => i !== action.payload);
-      console.log(`👤 [UserStore] REMOVE_GEMINI_KEY → Removed index ${action.payload}, ${filtered.length} remaining`);
-      return { ...state, geminiApiKeys: filtered, geminiActiveKeyIndex: Math.min(state.geminiActiveKeyIndex, Math.max(0, filtered.length - 1)) };
+      const nextKeys = (state.geminiApiKeys || []).filter((_, index) => index !== action.payload);
+      return updateProviderCollection({
+        ...state,
+        geminiApiKeys: nextKeys,
+        geminiActiveKeyIndex: Math.min(state.geminiActiveKeyIndex, Math.max(0, nextKeys.length - 1)),
+      }, 'gemini', {
+        apiKeys: nextKeys,
+        apiKey: nextKeys[0] || '',
+      });
     }
     case 'SET_ACTIVE_GEMINI_KEY':
-      console.log(`👤 [UserStore] SET_ACTIVE_GEMINI_KEY → index ${action.payload}`);
       return { ...state, geminiActiveKeyIndex: action.payload };
     case 'ROTATE_GEMINI_KEY': {
       const keys = state.geminiApiKeys || [];
       if (keys.length <= 1) return state;
-      const nextIdx = (state.geminiActiveKeyIndex + 1) % keys.length;
-      console.log(`👤 [UserStore] ROTATE_GEMINI_KEY → ${state.geminiActiveKeyIndex} → ${nextIdx} (of ${keys.length})`);
-      return { ...state, geminiActiveKeyIndex: nextIdx };
+      return {
+        ...state,
+        geminiActiveKeyIndex: (state.geminiActiveKeyIndex + 1) % keys.length,
+      };
     }
     case 'SET_SUPABASE_URL':
-      console.log(`👤 [UserStore] SET_SUPABASE_URL → ${action.payload ? action.payload.substring(0, 30) + '...' : 'cleared'}`);
-      return { ...state, supabaseUrl: action.payload };
     case 'SET_SUPABASE_KEY':
-      console.log(`👤 [UserStore] SET_SUPABASE_KEY → ${action.payload ? '***' + action.payload.slice(-6) : 'cleared'}`);
-      return { ...state, supabaseAnonKey: action.payload };
+      // no-op — Supabase credentials are now read exclusively from .env
+      return state;
     case 'SET_OFF_CREDENTIALS':
-      console.log(`👤 [UserStore] SET_OFF_CREDENTIALS → username="${action.payload.username}"`);
-      return { ...state, offUsername: action.payload.username, offPassword: action.payload.password };
+      return {
+        ...state,
+        offUsername: action.payload.username,
+        offPassword: action.payload.password,
+        offContactEmail: action.payload.contactEmail ?? state.offContactEmail,
+      };
     case 'TOGGLE_AI_ENABLED':
-      console.log(`👤 [UserStore] TOGGLE_AI_ENABLED → ${!state.aiEnabled ? 'ON' : 'OFF'}`);
       return { ...state, aiEnabled: !state.aiEnabled };
     case 'SET_HEALTH_MODE':
-      console.log(`👤 [UserStore] SET_HEALTH_MODE → "${action.payload}"`);
       return { ...state, healthMode: action.payload };
     case 'TOGGLE_HEALTH_CONDITION': {
-      const cid = action.payload;
-      const exists = state.healthConditions.includes(cid);
-      console.log(`👤 [UserStore] TOGGLE_HEALTH_CONDITION → "${cid}" ${exists ? 'REMOVED' : 'ADDED'}`);
+      const exists = state.healthConditions.includes(action.payload);
       return {
         ...state,
         healthConditions: exists
-          ? state.healthConditions.filter(c => c !== cid)
-          : [...state.healthConditions, cid],
+          ? state.healthConditions.filter((value) => value !== action.payload)
+          : [...state.healthConditions, action.payload],
       };
     }
     case 'SET_EMAIL':
-      console.log(`👤 [UserStore] SET_EMAIL → "${action.payload || 'cleared'}"`);
       return { ...state, email: action.payload || '', sessionExpired: false };
     case 'SET_FULL_NAME':
-      console.log(`👤 [UserStore] SET_FULL_NAME → "${action.payload || 'cleared'}"`);
       return { ...state, fullName: action.payload || '' };
-    // Production fix: JWT expired and auto-refresh failed — force to Login screen
     case 'SESSION_EXPIRED':
-      console.warn(`👤 [UserStore] SESSION_EXPIRED → Clearing identity, navigator will redirect to Login`);
       return { ...state, email: '', fullName: '', sessionExpired: true };
     default:
       return state;
@@ -129,35 +232,57 @@ const UserContext = createContext();
 
 export function UserProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, defaultPrefs);
-  // Bug #2: Track whether we've already attempted session restore so we only do it once
-  const sessionCheckedRef = React.useRef(false);
-  // Per-user isolation: track which storage key is currently active
-  const currentStorageKeyRef = React.useRef(USER_PREFS_KEY);
+  const sessionCheckedRef = useRef(false);
+  const currentStorageKeyRef = useRef(USER_PREFS_KEY);
 
-  // ── Load prefs from AsyncStorage on mount (with 5s Timeout) ──
   useEffect(() => {
     let isMounted = true;
     let timeoutId;
 
     (async () => {
       try {
-        console.log(`👤 [UserStore] INIT → Loading user preferences from AsyncStorage...`);
-        const loadPromise = AsyncStorage.getItem(USER_PREFS_KEY);
+        const loadPromise = (async () => {
+          // Step 1: Try to detect a saved Supabase session in AsyncStorage.
+          // supabase-js v2 stores the session under a key like:
+          // "sb-<project-ref>-auth-token" — we scan for it to find the userId
+          // so we can load the correct user-scoped prefs key immediately,
+          // avoiding the "No credentials" window at startup.
+          let userId = null;
+          try {
+            const allKeys = await AsyncStorage.getAllKeys();
+            const sessionKey = allKeys.find(
+              (k) => k.startsWith('sb-') && k.endsWith('-auth-token')
+            );
+            if (sessionKey) {
+              const sessionRaw = await AsyncStorage.getItem(sessionKey);
+              const sessionData = sessionRaw ? JSON.parse(sessionRaw) : null;
+              userId = sessionData?.user?.id || sessionData?.session?.user?.id || null;
+            }
+          } catch {
+            // Non-fatal — fall through to guest key
+          }
+
+          // Step 2: Load from user-scoped key if we found a userId, else guest key
+          const preferredKey = userId ? getUserPrefsKey(userId) : USER_PREFS_KEY;
+          if (userId && preferredKey !== USER_PREFS_KEY) {
+            currentStorageKeyRef.current = preferredKey;
+          }
+
+          const raw = await AsyncStorage.getItem(preferredKey);
+          return raw ? JSON.parse(raw) : {};
+        })();
+
         const timeoutPromise = new Promise((_, reject) => {
           timeoutId = setTimeout(() => reject(new Error('AsyncStorage timeout after 5s')), 5000);
         });
 
-        const raw = await Promise.race([loadPromise, timeoutPromise]);
+        const parsed = await Promise.race([loadPromise, timeoutPromise]);
         clearTimeout(timeoutId);
-
         if (!isMounted) return;
 
-        const prefs = raw ? JSON.parse(raw) : {};
-        console.log(`👤 [UserStore] INIT → ✅ Loaded prefs (email: ${prefs.email || 'none'}, keys: ${prefs.geminiApiKeys?.length || 0})`);
-        dispatch({ type: 'SET_PREFS', payload: prefs });
-      } catch (e) {
+        dispatch({ type: 'SET_PREFS', payload: parsed });
+      } catch {
         if (!isMounted) return;
-        console.error(`👤 [UserStore] INIT → ❌ Failed to load prefs (${e.message}) — using defaults`);
         dispatch({ type: 'SET_PREFS', payload: {} });
       }
     })();
@@ -168,143 +293,92 @@ export function UserProvider({ children }) {
     };
   }, []);
 
-  // ── Persist to AsyncStorage + push credentials to Supabase singleton ──
   useEffect(() => {
     if (!state.loaded) return;
     const { loaded, ...prefs } = state;
-    // Per-user isolation: always save to the CURRENT user-scoped key
-    const storageKey = currentStorageKeyRef.current;
-    console.log(`👤 [UserStore] PERSIST → Saving prefs to "${storageKey}" (email: ${prefs.email || 'none'}, model: ${prefs.geminiModel})`);
-    AsyncStorage.setItem(storageKey, JSON.stringify(prefs)).catch(() => {});
-
-    // Propagate dynamically loaded keys to singleton services
-    const supaKeys = getSupabaseCredentials(state);
-    setSupabaseCredentials(supaKeys.url, supaKeys.key);
-
-    // Sync fallback FSSAI/WHO macro thresholds
+    AsyncStorage.setItem(currentStorageKeyRef.current, JSON.stringify(prefs)).catch(() => {});
     syncThresholds();
   }, [state]);
 
-  // ── Bug #2: Auto-restore Supabase auth session + lifecycle listener ──
   useEffect(() => {
     if (!state.loaded || sessionCheckedRef.current) return;
     sessionCheckedRef.current = true;
 
     const client = getSupabaseClient();
-    if (!client) {
-      console.log(`👤 [UserStore] SESSION RESTORE → Supabase not configured, skipping`);
-      return;
-    }
+    if (!client) return;
 
+    // Restore session on mount
     (async () => {
       try {
-        console.log(`👤 [UserStore] SESSION RESTORE → Checking for saved Supabase session...`);
         const { data: { session }, error } = await client.auth.getSession();
+        if (error || !session) return;
 
-        if (error) {
-          console.warn(`👤 [UserStore] SESSION RESTORE → getSession error: ${error.message}`);
-          return; // Network down — stay in current state, try again next launch
-        }
-
-        if (!session) {
-          console.log(`👤 [UserStore] SESSION RESTORE → No session found (guest mode)`);
-          return;
-        }
-
-        // Session exists — check if the token is still valid
-        // (It may be expired after the user was offline for > 1 hour)
-        const tokenExpiresAt = session.expires_at; // Unix timestamp in seconds
-        const nowSecs        = Math.floor(Date.now() / 1000);
-        const isExpired      = tokenExpiresAt && nowSecs > tokenExpiresAt;
-
-        if (isExpired) {
-          console.warn(`👤 [UserStore] SESSION RESTORE → Token expired (exp: ${tokenExpiresAt}, now: ${nowSecs}). Attempting refresh...`);
-          try {
-            const { data: refreshData, error: refreshError } = await client.auth.refreshSession();
-            if (refreshError || !refreshData?.session) {
-              // Refresh failed (offline or revoked) — force clean sign-out
-              console.error(`👤 [UserStore] SESSION RESTORE → ❌ Refresh FAILED: ${refreshError?.message || 'no session'}`);
-              await client.auth.signOut().catch(() => {}); // best-effort local clear
-              dispatch({ type: 'SESSION_EXPIRED' });
-              return;
-            }
-            // Token refreshed — use the new session
-            const refreshedUser = refreshData.session.user;
-            console.log(`👤 [UserStore] SESSION RESTORE → ✅ Token refreshed for "${refreshedUser.email}"`);
-            if (!state.email) dispatch({ type: 'SET_EMAIL', payload: refreshedUser.email || '' });
-            if (!state.fullName && refreshedUser.user_metadata?.full_name) {
-              dispatch({ type: 'SET_FULL_NAME', payload: refreshedUser.user_metadata.full_name });
-            }
-            return;
-          } catch (refreshErr) {
-            console.error(`👤 [UserStore] SESSION RESTORE → ❌ Refresh threw: ${refreshErr.message}`);
-            dispatch({ type: 'SESSION_EXPIRED' });
-            return;
-          }
-        }
-
-        // Token is still valid
         const email = session.user.email || '';
-        const name  = session.user.user_metadata?.full_name || '';
-        console.log(`👤 [UserStore] SESSION RESTORE → ✅ Valid session for "${email}"`);
+        const name = session.user.user_metadata?.full_name || '';
         if (!state.email) dispatch({ type: 'SET_EMAIL', payload: email });
         if (!state.fullName && name) dispatch({ type: 'SET_FULL_NAME', payload: name });
-
-      } catch (e) {
-        console.warn(`👤 [UserStore] SESSION RESTORE → Unexpected error: ${e.message}`);
+      } catch {
+        // Keep the app usable even if session restore fails while offline.
       }
     })();
 
-    // Token Lifecycle Listener: watch for expirations, logouts, or explicit sign-ins
-    let subscription;
+    // Subscribe to auth state changes — set up once, never torn down on email/name change
+    let authSubscription;
     try {
-      const resp = client.auth.onAuthStateChange(async (event, session) => {
-        console.log(`👤 [UserStore] AUTH STATE EVENT → ${event}`);
-
+      const authListener = client.auth.onAuthStateChange(async (event, session) => {
         if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
-          // Per-user isolation: on logout, wipe user-scoped key and reset to anonymous defaults
-          console.log(`👤 [UserStore] SIGNED_OUT → Resetting to anonymous prefs key`);
           currentStorageKeyRef.current = USER_PREFS_KEY;
           dispatch({ type: 'SET_EMAIL', payload: '' });
           dispatch({ type: 'SET_FULL_NAME', payload: '' });
+          return;
+        }
 
-        } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          if (session?.user) {
-            const userId = session.user.id;
-            const email  = session.user.email || '';
-            const name   = session.user.user_metadata?.full_name || '';
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+          const userId = session.user.id;
+          const email = session.user.email || '';
+          const fullName = session.user.user_metadata?.full_name || '';
+          const scopedKey = getUserPrefsKey(userId);
 
-            // Per-user isolation: switch to user-scoped storage key and load that user's prefs
-            const userKey = getUserPrefsKey(userId);
-            if (userKey !== currentStorageKeyRef.current) {
-              console.log(`👤 [UserStore] SIGNED_IN → Switching storage key to "${userKey}"`);
-              currentStorageKeyRef.current = userKey;
-              try {
-                const raw = await AsyncStorage.getItem(userKey);
-                const savedPrefs = raw ? JSON.parse(raw) : {};
-                console.log(`👤 [UserStore] Loaded user-scoped prefs for "${email}" (keys: ${savedPrefs.geminiApiKeys?.length || 0})`);
-                dispatch({ type: 'SET_PREFS', payload: { ...savedPrefs, email, fullName: name } });
-              } catch (e) {
-                console.warn(`👤 [UserStore] Could not load user-scoped prefs: ${e.message}`);
-                dispatch({ type: 'SET_EMAIL', payload: email });
-                dispatch({ type: 'SET_FULL_NAME', payload: name });
-              }
-            } else {
+          if (scopedKey !== currentStorageKeyRef.current) {
+            currentStorageKeyRef.current = scopedKey;
+            try {
+              const raw = await AsyncStorage.getItem(scopedKey);
+              const savedPrefs = raw ? JSON.parse(raw) : {};
+              dispatch({ type: 'SET_PREFS', payload: { ...savedPrefs, email, fullName } });
+            } catch {
               dispatch({ type: 'SET_EMAIL', payload: email });
-              if (name) dispatch({ type: 'SET_FULL_NAME', payload: name });
+              dispatch({ type: 'SET_FULL_NAME', payload: fullName });
             }
+            return;
           }
+
+          dispatch({ type: 'SET_EMAIL', payload: email });
+          if (fullName) dispatch({ type: 'SET_FULL_NAME', payload: fullName });
         }
       });
-      subscription = resp?.data?.subscription;
-    } catch (e) {
-      console.warn(`👤 [UserStore] AUTH STATE EVENT → Failed to attach listener: ${e.message}`);
+      authSubscription = authListener?.data?.subscription;
+    } catch {
+      authSubscription = null;
     }
 
+    // Re-verify session whenever the app returns to the foreground.
+    // This prevents iOS "fossilized" client issues where the token goes
+    // stale after the app is suspended for a long time.
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (!client) return;
+      if (nextState === 'active') {
+        client.auth.startAutoRefresh();
+      } else {
+        client.auth.stopAutoRefresh();
+      }
+    });
+
     return () => {
-      subscription?.unsubscribe();
+      authSubscription?.unsubscribe();
+      appStateSubscription?.remove();
     };
-  }, [state.loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.loaded]); // ← intentionally only 'loaded' — avoids re-subscribing on every login
 
   return (
     <UserContext.Provider value={{ userPrefs: state, userDispatch: dispatch, sessionExpired: state.sessionExpired }}>
@@ -315,50 +389,46 @@ export function UserProvider({ children }) {
 
 export function useUser() {
   const context = useContext(UserContext);
-  if (!context) throw new Error('useUser must be used within UserProvider');
+  if (!context) {
+    throw new Error('useUser must be used within UserProvider');
+  }
   return context;
 }
 
-/**
- * Get the currently active Gemini API key (rotates on failure)
- */
+export function getActiveProvider(userPrefs) {
+  const registry = ensureProviderRegistry(userPrefs || {});
+  return getProviderById(registry.providers, registry.activeProviderId) || registry.providers[0] || null;
+}
+
 export function getGeminiKey(userPrefs) {
-  const keys = userPrefs?.geminiApiKeys || [];
-  // Legacy compat: support old single-key field
-  if (keys.length === 0 && userPrefs?.geminiApiKey) {
-    return userPrefs.geminiApiKey || null;
-  }
-  const idx = userPrefs?.geminiActiveKeyIndex || 0;
-  // Return null (not '') so callers can detect missing key and fall back
-  return keys[idx] || process.env.EXPO_PUBLIC_GEMINI_API_KEY || null;
+  const provider = getProviderById(userPrefs?.providers || [], 'gemini');
+  return provider?.apiKeys?.[userPrefs?.geminiActiveKeyIndex || 0]
+    || provider?.apiKey
+    || userPrefs?.geminiApiKeys?.[userPrefs?.geminiActiveKeyIndex || 0]
+    || process.env.EXPO_PUBLIC_GEMINI_API_KEY
+    || null;
 }
 
-/**
- * Get all configured Gemini API keys
- */
 export function getAllGeminiKeys(userPrefs) {
-  const keys = userPrefs?.geminiApiKeys || [];
-  if (keys.length === 0 && userPrefs?.geminiApiKey) {
-    return [userPrefs.geminiApiKey];
+  const provider = getProviderById(userPrefs?.providers || [], 'gemini');
+  if (provider?.apiKeys?.length) {
+    return provider.apiKeys;
   }
-  return keys;
+  return Array.isArray(userPrefs?.geminiApiKeys) ? userPrefs.geminiApiKeys.filter(Boolean) : [];
 }
 
-/**
- * Get Supabase URL and Key (in-app keys take priority over .env)
- */
-export function getSupabaseCredentials(userPrefs) {
-  const url = userPrefs?.supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-  const key = userPrefs?.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
-  return { url, key };
+export function getSupabaseCredentials() {
+  // Credentials are now exclusively from .env — not from user preferences.
+  return {
+    url: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
+    key: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
+  };
 }
 
-/**
- * Get Open Food Facts credentials
- * In-app credentials (API tab) take priority over .env
- */
 export function getOFFCredentials(userPrefs) {
-  const username = userPrefs?.offUsername || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
-  const password = userPrefs?.offPassword || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
-  return { username, password };
+  return {
+    username: userPrefs?.offUsername || process.env.EXPO_PUBLIC_OFF_USERNAME || '',
+    password: userPrefs?.offPassword || process.env.EXPO_PUBLIC_OFF_PASSWORD || '',
+    contactEmail: userPrefs?.offContactEmail || process.env.EXPO_PUBLIC_OFF_CONTACT_EMAIL || 'contact@ffads.app',
+  };
 }

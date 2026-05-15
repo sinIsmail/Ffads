@@ -4,9 +4,11 @@ import { getSupabaseClient } from '../services/supabase';
 // Offline Defaults (WHO / FSSAI Guidelines)
 // These values act as a permanent, instant fallback if the user is offline or Supabase fails.
 let THRESHOLDS = {
-  sugar: { value: 10, unit: 'g', alert_level: 'High' },     // >10g per 100g
-  sodium: { value: 400, unit: 'mg', alert_level: 'High' },    // >400mg per 100g
-  satFat: { value: 5, unit: 'g', alert_level: 'High' },       // >5g per 100g
+  sugar:    { value: 10,  unit: 'g',  alert_level: 'High' },   // >10g per 100g  (WHO/FSSAI)
+  sodium:   { value: 400, unit: 'mg', alert_level: 'High' },   // >400mg per 100g (WHO/FSSAI)
+  satFat:   { value: 5,   unit: 'g',  alert_level: 'High' },   // >5g per 100g   (WHO/FSSAI)
+  transFat: { value: 0.2, unit: 'g',  alert_level: 'High' },   // >0.2g per 100g  (FSSAI Mandatory)
+  caffeine: { value: 150, unit: 'mg', alert_level: 'High' },   // >150mg per serving (FSSAI Mandatory)
 };
 
 let loadedFromDB = false;
@@ -108,6 +110,34 @@ export function calculateMacroScore(nutrition) {
       limit: THRESHOLDS.satFat.value,
       message: `Exceeds limit (${satFat}g > ${THRESHOLDS.satFat.value}g)`,
       source: THRESHOLDS.satFat.source || 'WHO'
+    });
+    score -= 2;
+  }
+
+  // Check Trans Fat (FSSAI Mandatory: ≤0.2g per 100g)
+  const transFat = parseNum(nutrition.transFat || nutrition['trans-fat'] || nutrition.transFats);
+  if (transFat !== null && transFat > THRESHOLDS.transFat.value) {
+    breaches.push({
+      type: 'Trans Fat',
+      value: transFat,
+      unit: THRESHOLDS.transFat.unit,
+      limit: THRESHOLDS.transFat.value,
+      message: `Exceeds FSSAI limit (${transFat}g > ${THRESHOLDS.transFat.value}g)`,
+      source: THRESHOLDS.transFat.source || 'FSSAI'
+    });
+    score -= 3; // trans fat is the worst offender
+  }
+
+  // Check Caffeine (FSSAI Mandatory: ≤150mg per serving)
+  const caffeine = parseNum(nutrition.caffeine);
+  if (caffeine !== null && caffeine > THRESHOLDS.caffeine.value) {
+    breaches.push({
+      type: 'Caffeine',
+      value: caffeine,
+      unit: THRESHOLDS.caffeine.unit,
+      limit: THRESHOLDS.caffeine.value,
+      message: `Exceeds FSSAI limit (${caffeine}mg > ${THRESHOLDS.caffeine.value}mg)`,
+      source: THRESHOLDS.caffeine.source || 'FSSAI'
     });
     score -= 2;
   }

@@ -7,14 +7,16 @@ import { spacing, borderRadius } from '../theme/spacing';
 import { WHO_THRESHOLDS } from '../utils/constants';
 
 const NUTRITION_ROWS = [
-  { key: 'energy', label: 'Energy', unit: 'kcal', icon: '🔥' },
-  { key: 'protein', label: 'Protein', unit: 'g', icon: '💪' },
-  { key: 'carbs', label: 'Carbohydrates', unit: 'g', icon: '🍞' },
-  { key: 'sugar', label: 'Sugar', unit: 'g', icon: '🍬', threshold: WHO_THRESHOLDS.sugar },
-  { key: 'fat', label: 'Total Fat', unit: 'g', icon: '🧈', threshold: WHO_THRESHOLDS.fat },
-  { key: 'saturatedFat', label: 'Saturated Fat', unit: 'g', icon: '🥓', threshold: WHO_THRESHOLDS.saturatedFat },
-  { key: 'fiber', label: 'Fiber', unit: 'g', icon: '🌿', isBonus: true },
-  { key: 'sodium', label: 'Sodium', unit: 'mg', icon: '🧂', threshold: WHO_THRESHOLDS.sodium },
+  { key: 'energy',       label: 'Energy',        unit: 'kcal', icon: '🔥' },
+  { key: 'protein',      label: 'Protein',        unit: 'g',    icon: '💪' },
+  { key: 'carbs',        label: 'Carbohydrates',  unit: 'g',    icon: '🍞' },
+  { key: 'sugar',        label: 'Sugar',          unit: 'g',    icon: '🍬', threshold: WHO_THRESHOLDS.sugar },
+  { key: 'fat',          label: 'Total Fat',      unit: 'g',    icon: '🧈', threshold: WHO_THRESHOLDS.fat },
+  { key: 'saturatedFat', label: 'Saturated Fat',  unit: 'g',    icon: '🥓', threshold: WHO_THRESHOLDS.saturatedFat },
+  { key: 'transFat',     label: 'Trans Fat',      unit: 'g',    icon: '⚠️', threshold: WHO_THRESHOLDS.transFat, isFssai: true },
+  { key: 'fiber',        label: 'Fiber',          unit: 'g',    icon: '🌿', isBonus: true },
+  { key: 'sodium',       label: 'Sodium',         unit: 'mg',   icon: '🧂', threshold: WHO_THRESHOLDS.sodium },
+  { key: 'caffeine',     label: 'Caffeine',       unit: 'mg',   icon: '☕', threshold: WHO_THRESHOLDS.caffeine, isFssai: true },
 ];
 
 export default function NutritionTable({ nutrition }) {

@@ -3,13 +3,17 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import { getSupabaseClient } from '../services/supabase';
+import { useUser } from '../store/UserContext';
 
 export default function AnimatedSplashScreen({ navigation }) {
+  const { userPrefs } = useUser();
   const [authRoute, setAuthRoute] = useState(null);
   const [isVideoFinished, setIsVideoFinished] = useState(false);
 
-  // 1. Check Supabase auth in the background
+  // 1. Check Supabase auth in the background (Wait for prefs to load first)
   useEffect(() => {
+    if (!userPrefs?.loaded) return;
+
     async function checkAuth() {
       try {
         const client = getSupabaseClient();
@@ -27,7 +31,7 @@ export default function AnimatedSplashScreen({ navigation }) {
     }
     
     checkAuth();
-  }, []);
+  }, [userPrefs?.loaded]);
 
   // 2. Mark video as finished when playback naturally ends
   const handlePlaybackStatusUpdate = (status) => {

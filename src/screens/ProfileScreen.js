@@ -135,8 +135,8 @@ export default function ProfileScreen({ navigation }) {
 
   const modalTitles = {
     health: 'Health & Diet',
-    ai: 'AI Logic',
-    api: 'Developer Auth',
+    ai: 'AI Routing & Models',
+    api: 'Supabase & Custom Connections',
     history: 'Scan History',
     contributions: 'My Contributions',
   };
@@ -240,6 +240,15 @@ export default function ProfileScreen({ navigation }) {
             </View>
             <Ionicons name="chevron-forward" size={18} color="#CCC" />
           </TouchableOpacity>
+          <View style={styles.menuDivider} />
+
+          <TouchableOpacity style={styles.menuRow} onPress={() => navigation.navigate('MyQr')}>
+            <View style={[styles.menuIconBox, { backgroundColor: '#DBEAFE' }]}>
+              <Ionicons name="qr-code-outline" size={18} color="#2563EB" />
+            </View>
+            <Text style={styles.menuRowText}>My QR</Text>
+            <Ionicons name="chevron-forward" size={18} color="#CCC" />
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.sectionHeader}>Developer Core</Text>
@@ -274,7 +283,7 @@ export default function ProfileScreen({ navigation }) {
 
             {activeModal === 'health' && <HealthTab userPrefs={userPrefs} userDispatch={userDispatch} />}
             {activeModal === 'ai' && <AITab userPrefs={userPrefs} userDispatch={userDispatch} />}
-            {activeModal === 'api' && <ApiTab userPrefs={userPrefs} userDispatch={userDispatch} onClearHistory={handleClearHistory} />}
+            {activeModal === 'api' && <ApiTab userPrefs={userPrefs} userDispatch={userDispatch} productDispatch={productDispatch} onClearHistory={handleClearHistory} />}
             {activeModal === 'history' && <HistoryTab history={productState.history} onPressProduct={handleProductPress} />}
             {activeModal === 'contributions' && <ContributionsTab userEmail={profileEmail !== '@guest' ? profileEmail : null} />}
           </ScrollView>

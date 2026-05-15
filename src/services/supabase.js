@@ -22,4 +22,10 @@ export {
   getUserProfile,
   saveProductImage,
   getProductImages,
+  createPersonalProduct,
+  listPersonalProducts,
+  getPersonalProductByCode,
+  getPersonalProductById,
+  lookupPersonalQr,
+  recordPersonalProductScan,
 } from './supabase/index';

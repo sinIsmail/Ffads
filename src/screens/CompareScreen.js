@@ -298,8 +298,8 @@ export default function CompareScreen() {
                   </Text>
                 </View>
               </View>
-              <View style={[styles.winnerScore, { borderColor: analyses[betterIdx].scoreColor }]}>
-                <Text style={[styles.winnerScoreNum, { color: analyses[betterIdx].scoreColor }]}>
+              <View style={styles.winnerScore}>
+                <Text style={styles.winnerScoreNum}>
                   {analyses[betterIdx].score}
                 </Text>
               </View>
@@ -313,20 +313,21 @@ export default function CompareScreen() {
                   <View key={a.product.id} style={[styles.scoreCard, isWinner && styles.scoreCardWinner]}>
                     {isWinner && (
                       <View style={styles.bestTag}>
+                        <Ionicons name="checkmark" size={10} color={C.good} />
                         <Text style={styles.bestTagTxt}>BEST</Text>
                       </View>
                     )}
                     {a.product.images?.front ? (
-                      <Image source={{ uri: a.product.images.front }} style={styles.cardImg} />
+                      <Image source={{ uri: a.product.images.front }} style={[styles.cardImg, isWinner && styles.cardImgWinner]} />
                     ) : (
-                      <View style={styles.cardImgPlaceholder}>
-                        <Ionicons name="cube-outline" size={24} color={C.inkSoft} />
+                      <View style={[styles.cardImgPlaceholder, isWinner && styles.cardImgWinner]}>
+                        <Ionicons name="cube-outline" size={24} color={isWinner ? C.good : C.inkSoft} />
                       </View>
                     )}
-                    <View style={[styles.cardScoreBubble, { borderColor: a.scoreColor }]}>
-                      <Text style={[styles.cardScoreNum, { color: a.scoreColor }]}>{a.score}</Text>
+                    <View style={[styles.cardScoreBubble, isWinner ? styles.cardScoreBubbleWinner : { borderColor: a.scoreColor }]}>
+                      <Text style={[styles.cardScoreNum, { color: isWinner ? C.good : a.scoreColor }]}>{a.score}</Text>
                     </View>
-                    <Text style={styles.cardGrade}>{a.grade}</Text>
+                    <Text style={[styles.cardGrade, isWinner && { color: C.good }]}>{a.grade}</Text>
                     <Text style={styles.cardName} numberOfLines={2}>{a.product.name}</Text>
                     <Text style={styles.cardBrand} numberOfLines={1}>{a.product.brand || ''}</Text>
                   </View>
@@ -486,20 +487,21 @@ const styles = StyleSheet.create({
   // Winner
   winnerBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: C.ink, borderRadius: 20, padding: 18, marginBottom: 16,
+    backgroundColor: C.goodSoft, borderRadius: 20, padding: 18, marginBottom: 16,
+    borderWidth: 1.5, borderColor: C.goodBorder,
   },
   winnerLeft: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
   trophyBox: {
     width: 40, height: 40, borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: C.goodBorder, alignItems: 'center', justifyContent: 'center',
   },
-  winnerLabel: { fontSize: 9, fontWeight: '800', color: 'rgba(255,255,255,0.5)', letterSpacing: 2, marginBottom: 3 },
-  winnerName:  { fontSize: 15, fontWeight: '800', color: C.white, flex: 1 },
+  winnerLabel: { fontSize: 9, fontWeight: '800', color: C.good, letterSpacing: 2, marginBottom: 3, opacity: 0.7 },
+  winnerName:  { fontSize: 15, fontWeight: '800', color: C.good, flex: 1 },
   winnerScore: {
-    width: 50, height: 50, borderRadius: 25, borderWidth: 2,
+    width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: C.good,
     alignItems: 'center', justifyContent: 'center', backgroundColor: C.white,
   },
-  winnerScoreNum: { fontSize: 18, fontWeight: '900' },
+  winnerScoreNum: { fontSize: 18, fontWeight: '900', color: C.good },
 
   // Score cards
   scoreCards: { flexDirection: 'row', gap: 12, marginBottom: 16 },
@@ -508,14 +510,16 @@ const styles = StyleSheet.create({
     alignItems: 'center', gap: 6,
     borderWidth: 1, borderColor: C.inkFaint,
   },
-  scoreCardWinner: { borderColor: C.ink, borderWidth: 1.5 },
+  scoreCardWinner: { backgroundColor: C.goodSoft, borderColor: C.goodBorder, borderWidth: 1.5 },
   bestTag: {
     position: 'absolute', top: 0, right: 0,
-    paddingHorizontal: 10, paddingVertical: 5,
-    backgroundColor: C.ink, borderTopRightRadius: 20, borderBottomLeftRadius: 14,
+    paddingHorizontal: 10, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: C.goodSoft, borderTopRightRadius: 20, borderBottomLeftRadius: 14,
+    borderWidth: 1, borderColor: C.goodBorder,
   },
-  bestTagTxt: { fontSize: 8, fontWeight: '800', color: C.white, letterSpacing: 1 },
+  bestTagTxt: { fontSize: 8, fontWeight: '800', color: C.good, letterSpacing: 1 },
   cardImg: { width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: C.inkFaint },
+  cardImgWinner: { borderColor: C.goodBorder, borderWidth: 1.5 },
   cardImgPlaceholder: {
     width: 56, height: 56, borderRadius: 12,
     backgroundColor: C.inkGhost, alignItems: 'center', justifyContent: 'center',
@@ -525,6 +529,7 @@ const styles = StyleSheet.create({
     width: 46, height: 46, borderRadius: 23, borderWidth: 2,
     alignItems: 'center', justifyContent: 'center', backgroundColor: C.white,
   },
+  cardScoreBubbleWinner: { borderColor: C.good, backgroundColor: C.goodSoft },
   cardScoreNum: { fontSize: 17, fontWeight: '900' },
   cardGrade:    { fontSize: 9, fontWeight: '700', color: C.inkSoft, letterSpacing: 1, textTransform: 'uppercase' },
   cardName:     { fontSize: 11, fontWeight: '800', color: C.ink, textAlign: 'center', lineHeight: 15 },

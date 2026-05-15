@@ -1,67 +1,56 @@
-// Ffads — Supabase Client (Connection management + ping)
+// Ffads — Supabase Client (Singleton — initialized once from .env at module load)
+//
+// The client is created a single time when this module is first imported.
+// Credentials come exclusively from EXPO_PUBLIC_SUPABASE_URL and
+// EXPO_PUBLIC_SUPABASE_ANON_KEY in your .env file.
+//
+// setSupabaseCredentials() is kept as a no-op for backward compatibility
+// so callers don't need to be changed all at once.
 
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-let supabase = null;
-let currentUrl = null;
-let currentKey = null;
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 
-export function setSupabaseCredentials(url, key) {
-  if (url && key) {
-    if (url !== currentUrl || key !== currentKey) {
-      currentUrl = url;
-      currentKey = key;
-      supabase = createClient(url, key, {
-        auth: {
-          storage: AsyncStorage,
-          autoRefreshToken: true,
-          persistSession: true,
-          detectSessionInUrl: false,
-        },
-      });
-      console.log(`🔌 [Supabase:Client] ✅ Client initialized (URL: ${url.substring(0, 30)}...)`);
-    }
-  } else {
-    // Revert to env vars
-    currentUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || null;
-    currentKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || null;
-    if (currentUrl && currentKey) {
-      supabase = createClient(currentUrl, currentKey, {
-        auth: {
-          storage: AsyncStorage,
-          autoRefreshToken: true,
-          persistSession: true,
-          detectSessionInUrl: false,
-        },
-      });
-      console.log(`🔌 [Supabase:Client] ✅ Client initialized from .env`);
-    } else {
-      supabase = null;
-      console.warn(`🔌 [Supabase:Client] ⚠️ No credentials found — Supabase is OFFLINE`);
-    }
-  }
+let supabase = null;
+
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      storage: AsyncStorage,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
+  });
+  console.log(`🔌 [Supabase:Client] ✅ Singleton initialized from .env (${SUPABASE_URL.substring(0, 30)}...)`);
+} else {
+  console.warn(`🔌 [Supabase:Client] ⚠️ EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY not set — Supabase is OFFLINE`);
 }
 
+/**
+ * No-op — kept for backward compatibility.
+ * Credentials are now read exclusively from .env at startup.
+ * Calling this no longer has any effect.
+ */
+export function setSupabaseCredentials(_url, _key) {
+  // intentionally empty — client is a singleton, never re-created at runtime
+}
+
+/** Returns the singleton Supabase client (or null if not configured). */
 export function getClient() {
-  if (!supabase) {
-    setSupabaseCredentials(); // Try init with env vars
-  }
   return supabase;
 }
 
-/**
- * Expose client for feature services (analysis.service, etc.)
- */
+/** Alias used by feature services. */
 export function getSupabaseClient() {
-  return getClient();
+  return supabase;
 }
 
-/**
- * Check if Supabase is configured
- */
+/** Returns true when the client is configured and ready. */
 export function isConfigured() {
-  return getClient() !== null;
+  return supabase !== null;
 }
 
 /**
@@ -70,17 +59,15 @@ export function isConfigured() {
  * @returns {Promise<{ connected: boolean, message: string, latencyMs?: number }>}
  */
 export async function pingSupabase() {
-  const client = getClient();
-  if (!client) {
+  if (!supabase) {
     console.warn(`🔌 [Supabase:Client] PING → ❌ Not configured`);
-    return { connected: false, message: 'Supabase URL or Anon Key not configured in .env' };
+    return { connected: false, message: 'Supabase URL or Anon Key not set in .env' };
   }
 
   try {
     console.log(`🔌 [Supabase:Client] PING → Testing connection...`);
     const start = Date.now();
-    // A minimal query — just count 1 row from any table to test connectivity
-    const { data, error } = await client
+    const { error } = await supabase
       .from('products')
       .select('barcode', { count: 'exact', head: true })
       .limit(1);
@@ -88,7 +75,7 @@ export async function pingSupabase() {
     const latencyMs = Date.now() - start;
 
     if (error) {
-      // Table might not exist yet but connection works
+      // Table might not exist yet but the connection itself works
       if (error.code === '42P01' || error.message?.includes('does not exist')) {
         console.log(`🔌 [Supabase:Client] PING → ✅ Connected (${latencyMs}ms) — table not created yet`);
         return { connected: true, message: `Connected (${latencyMs}ms) — table not created yet`, latencyMs };

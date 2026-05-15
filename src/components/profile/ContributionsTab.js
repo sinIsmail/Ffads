@@ -48,8 +48,13 @@ export default function ContributionsTab({ userEmail }) {
       </Text>
 
       {contributions.map((c, idx) => {
-        // Try dedicated ingredients column, fall back to gemini_filtered_data
+        // Try dedicated ingredients column, then ai_filtered_data, then the legacy gemini_filtered_data
         let ingredients = Array.isArray(c.ingredients) ? c.ingredients : [];
+        if (ingredients.length === 0 && c.ai_filtered_data?.ingredients) {
+          ingredients = Array.isArray(c.ai_filtered_data.ingredients)
+            ? c.ai_filtered_data.ingredients
+            : [];
+        }
         if (ingredients.length === 0 && c.gemini_filtered_data?.ingredients) {
           ingredients = Array.isArray(c.gemini_filtered_data.ingredients)
             ? c.gemini_filtered_data.ingredients

@@ -12,32 +12,77 @@ import { colors } from './src/theme/colors';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 
-// Offline Queue Handlers
-import { startConnectivityWatchdog, registerQueueHandlers } from './src/services/connectivity';
-import { saveProduct } from './src/services/supabase';
-import { contributeToOFF } from './src/services/openfoodfacts';
+import { startConnectivityWatchdog } from './src/services/connectivity';
+import { processPendingJobs, attachContributionQueueToAppState } from './src/services/contributionQueue';
+import { useUser } from './src/store/UserContext';
+import { useProducts } from './src/store/ProductContext';
+
+function AppRuntime() {
+  const { userPrefs } = useUser();
+  const { productDispatch } = useProducts();
+
+  const runPendingJobs = React.useCallback(() => {
+    if (!userPrefs?.loaded) return;
+    processPendingJobs({
+      userPrefs,
+      productDispatch,
+      includeBlocked: false,
+    }).catch(() => {});
+  }, [userPrefs, productDispatch]);
+
+  const providerSignature = React.useMemo(() => JSON.stringify({
+    activeProviderId: userPrefs?.activeProviderId,
+    providers: userPrefs?.providers || [],
+    offUsername: userPrefs?.offUsername || '',
+    offPassword: userPrefs?.offPassword || '',
+    supabaseUrl: userPrefs?.supabaseUrl || '',
+    supabaseAnonKey: userPrefs?.supabaseAnonKey || '',
+  }), [userPrefs]);
+
+  React.useEffect(() => {
+    if (!userPrefs?.loaded) return undefined;
+
+    runPendingJobs();
+
+    const unsubscribeConnectivity = startConnectivityWatchdog({
+      onReconnect: () => runPendingJobs(),
+    });
+
+    const appStateSubscription = attachContributionQueueToAppState((nextState) => {
+      if (nextState === 'active') {
+        runPendingJobs();
+      }
+    });
+
+    return () => {
+      unsubscribeConnectivity?.();
+      appStateSubscription?.remove?.();
+    };
+  }, [userPrefs?.loaded, runPendingJobs]);
+
+  React.useEffect(() => {
+    if (!userPrefs?.loaded) return;
+    runPendingJobs();
+  }, [providerSignature, userPrefs?.loaded, runPendingJobs]);
+
+  return (
+    <>
+      <StatusBar barStyle="dark-content" backgroundColor={colors.background} />
+      <NavigationContainer>
+        <AppNavigator />
+      </NavigationContainer>
+    </>
+  );
+}
 
 export default function App() {
-  React.useEffect(() => {
-    // Register the tasks the offline queue should execute when connection restores
-    registerQueueHandlers({
-      product_save:     (payload) => saveProduct(payload),
-      off_contribution: (payload) => contributeToOFF(payload, null, {}),
-    });
-    // Start listening to network changes
-    startConnectivityWatchdog();
-  }, []);
-
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <BottomSheetModalProvider>
         <SafeAreaProvider>
           <UserProvider>
             <ProductProvider>
-              <StatusBar barStyle="dark-content" backgroundColor={colors.background} />
-              <NavigationContainer>
-                <AppNavigator />
-              </NavigationContainer>
+              <AppRuntime />
             </ProductProvider>
           </UserProvider>
         </SafeAreaProvider>

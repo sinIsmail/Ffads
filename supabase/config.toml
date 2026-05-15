@@ -1,0 +1,4 @@
+project_id = "52f31645-a8ec-4151-8aae-fbbd03baacf2"
+
+[functions.cloudinary-sign]
+verify_jwt = true

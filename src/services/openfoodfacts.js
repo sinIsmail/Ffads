@@ -1,351 +1,425 @@
-// Ffads — Open Food Facts Service
-// Docs: https://openfoodfacts.github.io/openfoodfacts-server/api/
-import * as FileSystem from 'expo-file-system/legacy';   // legacy needed for EncodingType in SDK 54
+import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 
-// ─── App identity (sent with every OFF request for contributor credit) ────────
-const APP_NAME    = 'Ffads';
+const APP_NAME = 'Ffads';
 const APP_VERSION = '1.0.0';
+const DEFAULT_CONTACT_EMAIL = process.env.EXPO_PUBLIC_OFF_CONTACT_EMAIL || 'contact@ffads.app';
 const DEVICE_UUID_KEY = '@ffads_device_uuid';
 
-// Lazy-loaded persistent device UUID (generated once, stored in AsyncStorage)
-let _deviceUuid = null;
-async function getDeviceUuid() {
-  if (_deviceUuid) return _deviceUuid;
-  try {
-    const stored = await AsyncStorage.getItem(DEVICE_UUID_KEY);
-    if (stored) { _deviceUuid = stored; return _deviceUuid; }
-    // Generate a simple RFC-4122 v4 UUID
-    const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
-    await AsyncStorage.setItem(DEVICE_UUID_KEY, uuid);
-    _deviceUuid = uuid;
-  } catch {
-    _deviceUuid = 'unknown-device';
-  }
-  return _deviceUuid;
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-// CGI write endpoint (text data)
 const OFF_CGI_URL = 'https://world.openfoodfacts.org/cgi/product_jqm2.pl';
-// CGI write endpoint (image uploads)
 const OFF_IMAGE_URL = 'https://world.openfoodfacts.org/cgi/product_image_upload.pl';
-
-// Read endpoint (barcode lookup)
 const BASE_URL = process.env.EXPO_PUBLIC_OFF_API_BASE_URL || 'https://world.openfoodfacts.org/api/v2';
 
-// OFF requires a descriptive User-Agent or they block the request
-// Format: AppName/Version (contact)
-const USER_AGENT = `${APP_NAME}/${APP_VERSION} (contact@ffads.app)`;
+let deviceUuidCache = null;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Build the Authorization header value for Basic Auth.
- * OFF's legacy CGI also accepts user_id+password in the body,
- * but sending both gives the best compatibility.
- */
-function buildAuthHeader(username, password) {
-  // btoa is available in React Native Hermes engine
-  const b64 = btoa(`${username}:${password}`);
-  return `Basic ${b64}`;
+function getExpoAppMeta() {
+  const expoConfig = Constants.expoConfig || {};
+  return {
+    appName: String(expoConfig.name || APP_NAME).trim() || APP_NAME,
+    appVersion: String(expoConfig.version || APP_VERSION).trim() || APP_VERSION,
+  };
 }
 
-/**
- * Append the standard OFF contributor-tracking fields to any FormData.
- * These make your uploads appear under your account on OFF.
- */
-async function appendContributorFields(formData, username) {
-  const uuid = await getDeviceUuid();
-  formData.append('app_name',    APP_NAME);
-  formData.append('app_version', APP_VERSION);
-  formData.append('app_uuid',    uuid);
-  // user_id is the OFF account name — required for credit
-  formData.append('user_id',     username);
+export function getOFFAppMeta(overrides = {}) {
+  const expoMeta = getExpoAppMeta();
+  const appName = String(overrides.appName || expoMeta.appName || APP_NAME).trim() || APP_NAME;
+  const appVersion = String(overrides.appVersion || expoMeta.appVersion || APP_VERSION).trim() || APP_VERSION;
+  const contactEmail = String(overrides.contactEmail || DEFAULT_CONTACT_EMAIL).trim() || DEFAULT_CONTACT_EMAIL;
+
+  return {
+    appName,
+    appVersion,
+    contactEmail,
+    userAgent: `${appName}/${appVersion} (${contactEmail})`,
+  };
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+async function getDeviceUuid() {
+  if (deviceUuidCache) return deviceUuidCache;
 
-/**
- * Look up a product by barcode from Open Food Facts
- */
-export async function lookupBarcode(barcode) {
   try {
-    const response = await fetch(`${BASE_URL}/product/${barcode}.json`, {
-      headers: { 'User-Agent': USER_AGENT },
+    const stored = await AsyncStorage.getItem(DEVICE_UUID_KEY);
+    if (stored) {
+      deviceUuidCache = stored;
+      return stored;
+    }
+
+    const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+      const random = (Math.random() * 16) | 0;
+      const value = char === 'x' ? random : (random & 0x3) | 0x8;
+      return value.toString(16);
     });
 
-    if (!response.ok) {
-      console.warn(`🌍 [OFF] Lookup → ⚠️ HTTP ${response.status} for barcode "${barcode}"`);
-      return null;
-    }
+    await AsyncStorage.setItem(DEVICE_UUID_KEY, uuid);
+    deviceUuidCache = uuid;
+    return uuid;
+  } catch {
+    deviceUuidCache = 'unknown-device';
+    return deviceUuidCache;
+  }
+}
 
-    const text = await response.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      console.warn(`🌍 [OFF] Lookup → ⚠️ Invalid JSON response for barcode "${barcode}"`);
-      return null;
-    }
+async function appendContributorFields(target, username, appMeta = null) {
+  const uuid = await getDeviceUuid();
+  const resolvedAppMeta = appMeta || getOFFAppMeta();
+  target.append('app_name', resolvedAppMeta.appName);
+  target.append('app_version', resolvedAppMeta.appVersion);
+  target.append('app_uuid', uuid);
+  target.append('user_id', username);
+}
 
-    if (data.status !== 1 || !data.product) return null;
-    return normalizeProduct(data.product, barcode);
-  } catch (error) {
-    console.error(`🌍 [OFF] Lookup → ❌ Failed for "${barcode}": ${error.message}`);
+function parseJsonSafely(rawText) {
+  try {
+    return JSON.parse(rawText);
+  } catch {
     return null;
   }
 }
 
-/**
- * Check if OFF credentials are configured
- */
-export function isOFFConfigured(creds) {
-  const u = creds?.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
-  const p = creds?.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
-  return !!(u && p);
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
 }
 
-/**
- * Upload a SINGLE image to an Open Food Facts product.
- *
- * React Native FormData requires a real file:// URI — not a data:// URI.
- * We write the base64 to a temp file then attach it, and clean up afterward.
- *
- * @param {string} barcode
- * @param {string} base64Image  — raw base64 string (no data: prefix)
- * @param {'front'|'ingredients'|'nutrition'} imageField
- * @param {{ username, password }} creds
- */
-export async function uploadImageToOFF(barcode, base64Image, imageField = 'front', creds = {}) {
-  const username = creds.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
-  const password = creds.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
+function isRetryableMessage(message = '') {
+  return /network|timeout|timed out|failed to fetch|socket/i.test(message);
+}
 
-  if (!username || !password) {
-    return { success: false, error: 'OFF credentials not configured — add them in Profile → API tab' };
-  }
-
-  // OFF field name mapping
-  const fieldMap = {
-    front:       'imgupload_front',
-    ingredients: 'imgupload_ingredients',
-    nutrition:   'imgupload_nutrition',
+function createFailure(error, options = {}) {
+  return {
+    success: false,
+    error,
+    retryable: options.retryable ?? false,
+    blocked: options.blocked ?? !options.retryable,
+    statusCode: options.statusCode ?? null,
+    details: options.details ?? null,
   };
-  const offField = fieldMap[imageField] || 'imgupload_other';
-
-  // Write base64 to a real temp file (RN FormData can't read data:// URIs)
-  const tmpFileName = `off_${imageField}_${Date.now()}.jpg`;
-  const tmpPath     = (FileSystem.cacheDirectory || '') + tmpFileName;
-
-  try {
-    await FileSystem.writeAsStringAsync(tmpPath, base64Image, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    console.log(`🌍 [OFF:Image] Step 1 → Temp file written: ${tmpFileName}`);
-
-    // ── Build FormData ──────────────────────────────────────────────────────
-    const formData = new FormData();
-    formData.append('code', barcode);
-
-    // Contributor tracking (required for your account to show as contributor)
-    await appendContributorFields(formData, username);
-
-    // Password — required alongside user_id for the legacy CGI endpoint
-    formData.append('password', password);
-
-    // Image attachment with real file:// URI
-    formData.append(offField, {
-      uri:  tmpPath,
-      name: tmpFileName,
-      type: 'image/jpeg',
-    });
-
-    // imagefield tells OFF which slot to put this image into
-    formData.append('imagefield', imageField);
-
-    console.log(`🌍 [OFF:Image] Step 2 → Uploading "${imageField}" image for barcode ${barcode}...`);
-
-    // ── Send request ────────────────────────────────────────────────────────
-    const response = await fetch(OFF_IMAGE_URL, {
-      method: 'POST',
-      body:   formData,
-      headers: {
-        'User-Agent':    USER_AGENT,
-        'Authorization': buildAuthHeader(username, password),
-        // DO NOT set Content-Type — let fetch set the multipart boundary
-      },
-    });
-
-    const rawText = await response.text();
-    console.log(`🌍 [OFF:Image] Step 3 → HTTP ${response.status} — ${rawText.substring(0, 150)}`);
-
-    let result;
-    try { result = JSON.parse(rawText); } catch { /* HTML error page fallthrough */ }
-
-    if (result?.status === 1 || result?.status_verbose === 'fields saved') {
-      console.log(`🌍 [OFF:Image] ✅ Image uploaded: ${barcode} (${imageField})`);
-      return { success: true };
-    }
-
-    return {
-      success: false,
-      error: result?.status_verbose || result?.error || `HTTP ${response.status}`,
-    };
-
-  } catch (error) {
-    console.error(`🌍 [OFF:Image] ❌ Upload failed (${imageField}): ${error.message}`);
-    return { success: false, error: error.message };
-  } finally {
-    // Always clean up temp file
-    FileSystem.deleteAsync(tmpPath, { idempotent: true }).catch(() => {});
-  }
 }
 
-/**
- * Contribute product text data + up to 3 images to Open Food Facts.
- *
- * Step 1 — POST text fields (name, brand, ingredients, nutrition)
- * Step 2 — Upload each image sequentially [front, nutrition, ingredients]
- *
- * @param {Object}   product       — product data to submit
- * @param {string[]} base64Images  — [front_b64, nutrition_b64, ingredients_b64]
- * @param {{ username, password }} creds
- */
-export async function contributeToOFF(product, base64Images = [], creds = {}) {
-  const username = creds.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
-  const password = creds.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
+function normalizeProduct(product, barcode) {
+  const nutriments = product.nutriments || {};
 
-  if (!username || !password) {
-    return { success: false, error: 'OFF credentials not configured — add them in Profile → API tab' };
-  }
-
-  console.log(`\n🌍 [OFF:Contribute] START → barcode=${product.barcode} | user="${username}" | app=${APP_NAME} ${APP_VERSION}`);
-
-  try {
-    // ── Step 1: Submit text/structured data as x-www-form-urlencoded ──────────
-    const textParams = new URLSearchParams();
-    textParams.append('code', product.barcode);
-
-    await appendContributorFields(textParams, username);
-    textParams.append('password', password);
-
-    // Product fields
-    if (product.name) textParams.append('product_name', product.name);
-    if (product.brand && product.brand !== 'Unknown Brand') {
-      textParams.append('brands', product.brand);
-    }
-    if (product.ingredientsRaw) {
-      textParams.append('ingredients_text', product.ingredientsRaw);
-    }
-
-    // Nutrition values
-    if (product.nutrition) {
-      const n = product.nutrition;
-      if (n.energy)       textParams.append('nutriment_energy-kcal_100g',   String(n.energy));
-      if (n.protein)      textParams.append('nutriment_proteins_100g',       String(n.protein));
-      if (n.carbs)        textParams.append('nutriment_carbohydrates_100g',  String(n.carbs));
-      if (n.sugar)        textParams.append('nutriment_sugars_100g',         String(n.sugar));
-      if (n.fat)          textParams.append('nutriment_fat_100g',            String(n.fat));
-      if (n.saturatedFat) textParams.append('nutriment_saturated-fat_100g', String(n.saturatedFat));
-      if (n.fiber)        textParams.append('nutriment_fiber_100g',          String(n.fiber));
-      if (n.sodium)       textParams.append('nutriment_sodium_100g',         String(n.sodium / 1000));
-    }
-
-    const textResponse = await fetch(OFF_CGI_URL, {
-      method:  'POST',
-      body:    textParams.toString(),
-      headers: {
-        'User-Agent':    USER_AGENT,
-        'Authorization': buildAuthHeader(username, password),
-        'Content-Type':  'application/x-www-form-urlencoded',
-      },
-    });
-
-    const textRaw = await textResponse.text();
-    console.log(`🌍 [OFF:Contribute] Step 1 → Text data HTTP ${textResponse.status}`);
-
-    let textResult;
-    try { textResult = JSON.parse(textRaw); } catch { /* ignore */ }
-    console.log(`🌍 [OFF:Contribute] Step 1 → Result: ${textResult?.status_verbose || 'unknown'}`);
-
-    // ── Step 2: Upload images sequentially ──────────────────────────────────
-    // Order matches what ProductDetailScreen passes: [front, nutrition, ingredients]
-    const imageFields  = ['front', 'nutrition', 'ingredients'];
-    const imageResults = [];
-
-    for (let i = 0; i < Math.min(base64Images.length, 3); i++) {
-      if (!base64Images[i]) continue;
-
-      const imgResult = await uploadImageToOFF(
-        product.barcode,
-        base64Images[i],
-        imageFields[i],
-        { username, password }
-      );
-      imageResults.push({ field: imageFields[i], ...imgResult });
-
-      // Small throttle between image uploads to be a good API citizen
-      if (i < base64Images.length - 1) {
-        await new Promise(r => setTimeout(r, 400));
-      }
-    }
-
-    const textSuccess    = textResult?.status === 1 || textResult?.status_verbose === 'fields saved';
-    const anyImageSuccess = imageResults.some(r => r.success);
-
-    return {
-      success:      textSuccess || anyImageSuccess,
-      textUploaded: textSuccess,
-      imageResults,
-    };
-
-  } catch (error) {
-    console.error(`🌍 [OFF:Contribute] ❌ Contribution FAILED: ${error.message}`);
-    return { success: false, error: error.message };
-  }
-}
-
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-function normalizeProduct(p, barcode) {
-  const nutriments = p.nutriments || {};
   return {
     barcode,
-    name:     p.product_name || p.product_name_en || 'Unknown Product',
-    brand:    p.brands || 'Unknown Brand',
-    category: p.categories_tags?.[0]?.replace('en:', '') || p.categories || 'Uncategorized',
+    name: product.product_name || product.product_name_en || 'Unknown Product',
+    brand: product.brands || 'Unknown Brand',
+    category: product.categories_tags?.[0]?.replace('en:', '') || product.categories || 'Uncategorized',
     images: {
-      front:       p.image_front_url       || p.image_url || null,
-      ingredients: p.image_ingredients_url || null,
-      nutrition:   p.image_nutrition_url   || null,
+      front: product.image_front_url || product.image_url || null,
+      ingredients: product.image_ingredients_url || null,
+      nutrition: product.image_nutrition_url || null,
     },
-    ingredients:    parseIngredientText(p.ingredients_text || p.ingredients_text_en || ''),
-    ingredientsRaw: p.ingredients_text || p.ingredients_text_en || '',
+    ingredients: parseIngredientText(product.ingredients_text || product.ingredients_text_en || ''),
+    ingredientsRaw: product.ingredients_text || product.ingredients_text_en || '',
     nutrition: {
-      energy:       nutriments['energy-kcal_100g']  || nutriments['energy-kcal'] || 0,
-      protein:      nutriments.proteins_100g         || 0,
-      carbs:        nutriments.carbohydrates_100g    || 0,
-      sugar:        nutriments.sugars_100g           || 0,
-      fat:          nutriments.fat_100g              || 0,
+      energy: nutriments['energy-kcal_100g'] || nutriments['energy-kcal'] || 0,
+      protein: nutriments.proteins_100g || 0,
+      carbs: nutriments.carbohydrates_100g || 0,
+      sugar: nutriments.sugars_100g || 0,
+      fat: nutriments.fat_100g || 0,
       saturatedFat: nutriments['saturated-fat_100g'] || 0,
-      fiber:        nutriments.fiber_100g            || 0,
-      sodium:       nutriments.sodium_100g ? nutriments.sodium_100g * 1000 : 0,
+      fiber: nutriments.fiber_100g || 0,
+      sodium: nutriments.sodium_100g ? nutriments.sodium_100g * 1000 : 0,
     },
-    nutriscore: p.nutriscore_grade || null,
-    novaGroup:  p.nova_group       || null,
-    source:     'openfoodfacts',
+    nutriscore: product.nutriscore_grade || null,
+    novaGroup: product.nova_group || null,
+    source: 'openfoodfacts',
   };
 }
 
 function parseIngredientText(text) {
   if (!text) return [];
+
   return text
     .replace(/\([^)]*\)/g, '')
     .split(/[,;]/)
-    .map((i) => i.trim())
-    .filter((i) => i.length > 1);
+    .map((item) => item.trim())
+    .filter((item) => item.length > 1);
+}
+
+export function isOFFConfigured(creds) {
+  const username = creds?.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
+  const password = creds?.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
+  return Boolean(username && password);
+}
+
+export async function lookupBarcode(barcode) {
+  try {
+    const response = await fetch(`${BASE_URL}/product/${barcode}.json`, {
+      headers: { 'User-Agent': getOFFAppMeta().userAgent },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const rawText = await response.text();
+    const data = parseJsonSafely(rawText);
+    if (data?.status !== 1 || !data?.product) {
+      return null;
+    }
+
+    return normalizeProduct(data.product, barcode);
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchProductImageUrls(barcode) {
+  if (!barcode) return [];
+
+  const response = await fetch(
+    `${BASE_URL}/product/${barcode}.json?fields=image_front_url,image_ingredients_url,image_nutrition_url,image_url`,
+    {
+      headers: { 'User-Agent': getOFFAppMeta().userAgent },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const rawText = await response.text();
+  const data = parseJsonSafely(rawText);
+  if (data?.status !== 1 || !data?.product) {
+    return [];
+  }
+
+  return [
+    data.product.image_front_url || data.product.image_url || null,
+    data.product.image_nutrition_url || null,
+    data.product.image_ingredients_url || null,
+  ]
+    .filter(Boolean)
+    .map((url) => url.replace('http://', 'https://'));
+}
+
+function summarizeImageUploadErrors(imageResults = []) {
+  return imageResults
+    .filter((result) => !result.success)
+    .map((result) => `${result.field}: ${result.error}`)
+    .join(' | ');
+}
+
+function isLikelyFileUri(value = '') {
+  return /^(file:\/\/|content:\/\/|\/|[A-Za-z]:\\)/.test(value);
+}
+
+async function resolveImageUploadUri(imagePathOrBase64, imageField = 'front') {
+  if (!imagePathOrBase64) {
+    return { uri: null, cleanup: null };
+  }
+
+  if (typeof imagePathOrBase64 === 'object' && imagePathOrBase64.uri) {
+    return { uri: imagePathOrBase64.uri, cleanup: null };
+  }
+
+  if (typeof imagePathOrBase64 === 'string' && isLikelyFileUri(imagePathOrBase64)) {
+    return { uri: imagePathOrBase64, cleanup: null };
+  }
+
+  const base64Image = typeof imagePathOrBase64 === 'object'
+    ? imagePathOrBase64.base64
+    : imagePathOrBase64;
+
+  const tempFileName = `off_${imageField}_${Date.now()}.jpg`;
+  const tempPath = `${FileSystem.cacheDirectory || ''}${tempFileName}`;
+
+  await FileSystem.writeAsStringAsync(tempPath, base64Image, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return {
+    uri: tempPath,
+    cleanup: () => FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => {}),
+  };
+}
+
+export async function syncProductNameToOFF({ barcode, name, creds = {}, appMeta = null }) {
+  const username = creds.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
+  const password = creds.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
+  const resolvedAppMeta = getOFFAppMeta({ contactEmail: creds.contactEmail, ...(appMeta || {}) });
+
+  if (!username || !password) {
+    return createFailure('OFF credentials are missing. Add them in Profile > API.', {
+      blocked: true,
+    });
+  }
+
+  const normalizedName = String(name || '').trim();
+  if (!barcode || !normalizedName) {
+    return createFailure('A product name is required before syncing to Open Food Facts.', {
+      blocked: true,
+    });
+  }
+
+  try {
+    const body = new URLSearchParams();
+    body.append('code', barcode);
+    await appendContributorFields(body, username, resolvedAppMeta);
+    body.append('password', password);
+    body.append('product_name', normalizedName);
+
+    const response = await fetch(OFF_CGI_URL, {
+      method: 'POST',
+      body: body.toString(),
+      headers: {
+        'User-Agent': resolvedAppMeta.userAgent,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+
+    const rawText = await response.text();
+    const result = parseJsonSafely(rawText);
+    const success = response.ok && (result?.status === 1 || result?.status_verbose === 'fields saved');
+
+    if (success) {
+      return {
+        success: true,
+        nameSynced: true,
+        statusCode: response.status,
+      };
+    }
+
+    return createFailure(
+      result?.status_verbose || result?.error || `HTTP ${response.status}`,
+      {
+        retryable: isRetryableStatus(response.status),
+        statusCode: response.status,
+        details: rawText,
+      }
+    );
+  } catch (error) {
+    return createFailure(error.message, {
+      retryable: isRetryableMessage(error.message),
+    });
+  }
+}
+
+export async function uploadImageToOFF({ barcode, imagePathOrBase64, imageField = 'front', creds = {}, appMeta = null }) {
+  const username = creds.username || process.env.EXPO_PUBLIC_OFF_USERNAME || '';
+  const password = creds.password || process.env.EXPO_PUBLIC_OFF_PASSWORD || '';
+  const resolvedAppMeta = getOFFAppMeta({ contactEmail: creds.contactEmail, ...(appMeta || {}) });
+  let cleanupUploadSource = null;
+
+  if (!username || !password) {
+    return createFailure('OFF credentials are missing. Add them in Profile > API.', {
+      blocked: true,
+    });
+  }
+
+  const fieldMap = {
+    front: 'imgupload_front',
+    ingredients: 'imgupload_ingredients',
+    nutrition: 'imgupload_nutrition',
+  };
+  const offField = fieldMap[imageField] || 'imgupload_other';
+
+  try {
+    const uploadSource = await resolveImageUploadUri(imagePathOrBase64, imageField);
+    cleanupUploadSource = uploadSource.cleanup || null;
+    if (!uploadSource.uri) {
+      return createFailure(`No ${imageField} image was provided for upload.`, {
+        blocked: true,
+      });
+    }
+
+    const formData = new FormData();
+    formData.append('code', barcode);
+    await appendContributorFields(formData, username, resolvedAppMeta);
+    formData.append('password', password);
+    formData.append(offField, {
+      uri: uploadSource.uri,
+      name: `off_${imageField}_${Date.now()}.jpg`,
+      type: 'image/jpeg',
+    });
+    formData.append('imagefield', imageField);
+
+    const response = await fetch(OFF_IMAGE_URL, {
+      method: 'POST',
+      body: formData,
+      headers: {
+        'User-Agent': resolvedAppMeta.userAgent,
+      },
+    });
+
+    const rawText = await response.text();
+    const result = parseJsonSafely(rawText);
+    const success = response.ok && (result?.status === 1 || result?.status_verbose === 'fields saved');
+
+    if (success) {
+      return {
+        success: true,
+        field: imageField,
+        statusCode: response.status,
+      };
+    }
+
+    return createFailure(
+      result?.status_verbose || result?.error || `HTTP ${response.status}`,
+      {
+        retryable: isRetryableStatus(response.status),
+        statusCode: response.status,
+        details: rawText,
+      }
+    );
+  } catch (error) {
+    return createFailure(error.message, {
+      retryable: isRetryableMessage(error.message),
+    });
+  } finally {
+    cleanupUploadSource?.();
+  }
+}
+
+export async function contributeToOFF({ barcode, name, creds = {}, appMeta = null, images = {} }) {
+  const nameResult = await syncProductNameToOFF({
+    barcode,
+    name,
+    creds,
+    appMeta,
+  });
+
+  if (!nameResult.success) {
+    return {
+      success: false,
+      nameSynced: false,
+      imageResults: [],
+      retryable: Boolean(nameResult.retryable),
+      blocked: Boolean(nameResult.blocked),
+      statusCode: nameResult.statusCode ?? null,
+      error: nameResult.error,
+      nameResult,
+    };
+  }
+
+  const imageFields = ['front', 'nutrition', 'ingredients'];
+  const imageResults = [];
+
+  for (const imageField of imageFields) {
+    if (!images?.[imageField]) continue;
+
+    const imageResult = await uploadImageToOFF({
+      barcode,
+      imageField,
+      imagePathOrBase64: images[imageField],
+      creds,
+      appMeta,
+    });
+
+    imageResults.push({ field: imageField, ...imageResult });
+  }
+
+  const anyFailure = imageResults.some((result) => !result.success);
+  const anyRetryableFailure = imageResults.some((result) => !result.success && result.retryable);
+
+  return {
+    success: !anyFailure,
+    nameSynced: true,
+    nameResult,
+    imageResults,
+    retryable: anyFailure && anyRetryableFailure,
+    blocked: anyFailure && !anyRetryableFailure,
+    error: anyFailure ? summarizeImageUploadErrors(imageResults) : null,
+  };
 }

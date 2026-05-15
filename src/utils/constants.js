@@ -1,18 +1,24 @@
 // Ffads — Constants (WHO thresholds, FSSAI limits, scoring weights)
 export const WHO_THRESHOLDS = {
   // Per 100g
-  sugar: { low: 5, medium: 12.5, high: 22.5 },
-  fat: { low: 3, medium: 10, high: 20 },
-  saturatedFat: { low: 1.5, medium: 5, high: 10 },
-  sodium: { low: 120, medium: 400, high: 600 },  // mg
-  fiber: { good: 3, excellent: 6 },               // g
-  protein: { good: 5, excellent: 10 },             // g
+  sugar:        { low: 5,    medium: 12.5, high: 22.5 },        // g
+  fat:          { low: 3,    medium: 10,   high: 20   },        // g
+  saturatedFat: { low: 1.5,  medium: 5,    high: 10   },        // g
+  sodium:       { low: 120,  medium: 400,  high: 600  },        // mg
+  fiber:        { good: 3,   excellent: 6  },                   // g (bonus)
+  protein:      { good: 5,   excellent: 10 },                   // g (bonus)
+  // FSSAI Mandatory limits (legally enforced)
+  transFat:     { low: 0,    medium: 0.1,  high: 0.2  },        // g — FSSAI ≤0.2g/100g
+  caffeine:     { low: 50,   medium: 100,  high: 150  },        // mg — FSSAI ≤150mg/serving
 };
 
 export const FSSAI_LIMITS = {
-  transFat: 0.2,       // g per 100g
-  caffeine: 150,       // mg per serving
-  addedSugar: 10,      // % of energy
+  transFat:   0.2,   // g per 100g          — FSSAI Mandatory (enforced)
+  caffeine:   150,   // mg per serving      — FSSAI Mandatory (enforced)
+  addedSugar: 10,    // % of total energy   — FSSAI HFSS Draft 2022
+  sugar_pct:  10,    // % of total energy   — FSSAI HFSS Draft 2022
+  satFat_pct: 10,    // % of total energy   — FSSAI HFSS Draft 2022
+  sodiumPer:  1,     // mg per kcal         — FSSAI HFSS Draft 2022
 };
 
 export const SCORING_WEIGHTS = {

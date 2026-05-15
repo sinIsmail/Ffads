@@ -1,346 +1,363 @@
--- ============================================
--- Ffads — Supabase Database Schema v2.1
--- Run this in: Supabase Dashboard → SQL Editor
--- This script safely drops existing tables and recreates them.
--- ============================================
+create extension if not exists pgcrypto;
 
--- ─── MASTER RESET (Safe Drop) ───────────────
-DROP TABLE IF EXISTS product_ai_data CASCADE;
-DROP TABLE IF EXISTS product_images CASCADE;
-DROP TABLE IF EXISTS user_scans CASCADE;
-DROP TABLE IF EXISTS user_contributions CASCADE;
-DROP TABLE IF EXISTS sync_queue CASCADE;
-DROP TABLE IF EXISTS ingredient_dictionary CASCADE;
-DROP TABLE IF EXISTS ingredients_knowledge CASCADE;
-DROP TABLE IF EXISTS products CASCADE;
-DROP TABLE IF EXISTS user_profiles CASCADE;
-DROP TABLE IF EXISTS threshold_limits CASCADE;
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
 
--- ─── Products Table ─────────────────────────
--- Basic product info — populated from OFF or OCR
-CREATE TABLE IF NOT EXISTS products (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  barcode TEXT UNIQUE NOT NULL,
-  name TEXT NOT NULL,
-  brand TEXT DEFAULT 'Unknown',
-  category TEXT DEFAULT 'Uncategorized',
-  
-  -- Ingredients (stored as JSON array of strings)
-  ingredients JSONB DEFAULT '[]'::jsonb,
-  ingredients_raw TEXT,
-  
-  -- Nutrition per 100g
-  nutrition JSONB DEFAULT '{}'::jsonb,
-  
-  -- Source
-  source TEXT DEFAULT 'manual',  -- 'openfoodfacts' | 'manual' | 'ocr'
-  nutriscore TEXT,
-  nova_group INTEGER,
-  
-  -- Timestamps
-  scanned_at TIMESTAMPTZ DEFAULT NOW(),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.products (
+  id uuid primary key default gen_random_uuid(),
+  barcode text not null unique,
+  name text not null,
+  brand text,
+  category text,
+  ingredients jsonb not null default '[]'::jsonb,
+  ingredients_raw text,
+  nutrition jsonb not null default '{}'::jsonb,
+  source text not null default 'manual',
+  nutriscore text,
+  nova_group integer,
+  scanned_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
-CREATE INDEX IF NOT EXISTS idx_products_scanned_at ON products(scanned_at DESC);
-
-
--- ─── Threshold Limits (FSSAI/WHO) ──────────────
--- Synchronized locally bounds values. Can be updated over-the-air.
-CREATE TABLE IF NOT EXISTS threshold_limits (
-  key TEXT PRIMARY KEY,
-  value NUMERIC NOT NULL,
-  unit TEXT DEFAULT 'g',
-  source TEXT DEFAULT 'WHO',
-  description TEXT,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.product_ai_data (
+  barcode text primary key references public.products(barcode) on delete cascade,
+  animal_content_flag boolean not null default false,
+  animal_content_details text,
+  harmful_chemicals jsonb not null default '[]'::jsonb,
+  ai_score numeric,
+  ai_recommendation text,
+  gemini_model text,
+  analysis_mode text,
+  status text not null default 'pending',
+  analyzed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
--- Note: App contains hardcoded offline fallbacks (Sugar >10g, Sodium >400mg, Sat Fat >5g)
-
--- ─── Product AI Data Table ──────────────────
--- AI analysis results — cached here so Gemini is not called again
--- Contains separated queries to prevent AI tokens waste
-CREATE TABLE IF NOT EXISTS product_ai_data (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  barcode TEXT UNIQUE NOT NULL REFERENCES products(barcode) ON DELETE CASCADE,
-  
-  -- Single Deep Analysis Result (1 Gemini call)
-  animal_content_flag BOOLEAN DEFAULT FALSE,
-  animal_content_details TEXT,
-  harmful_chemicals JSONB DEFAULT '[]'::jsonb,  -- [{name, realName, risk}]
-  ai_score INTEGER CHECK (ai_score >= 0 AND ai_score <= 100),
-  ai_recommendation TEXT,
-  
-  -- Meta
-  gemini_model TEXT,
-  analysis_mode TEXT,
-  analyzed_at TIMESTAMPTZ DEFAULT NOW(),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.product_images (
+  id uuid primary key default gen_random_uuid(),
+  barcode text not null references public.products(barcode) on delete cascade,
+  image_type text not null,
+  url text,
+  storage_path text,
+  created_at timestamptz not null default now(),
+  unique (barcode, image_type)
 );
 
-CREATE INDEX IF NOT EXISTS idx_product_ai_barcode ON product_ai_data(barcode);
-
-
--- ─── Product Images (Supabase Storage references) ───
-CREATE TABLE IF NOT EXISTS product_images (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  barcode TEXT NOT NULL REFERENCES products(barcode) ON DELETE CASCADE,
-  image_type TEXT NOT NULL,  -- 'front' | 'ingredients' | 'nutrition'
-  storage_path TEXT,         -- Supabase Storage path
-  url TEXT,                  -- Public URL (from OFF or storage)
-  created_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.user_profiles (
+  id uuid primary key default gen_random_uuid(),
+  device_id text not null unique,
+  allergies jsonb not null default '[]'::jsonb,
+  diet text,
+  gemini_model text,
+  analysis_mode text,
+  health_mode text,
+  off_enabled boolean not null default true,
+  ai_fallback boolean not null default true,
+  offline_mode boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_product_images_barcode ON product_images(barcode);
-
-
--- ─── Ingredient Dictionary ──────────────────
--- Master ingredient database — used for color coding
-CREATE TABLE IF NOT EXISTS ingredient_dictionary (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,
-  color TEXT NOT NULL DEFAULT 'yellow',      -- 'green' | 'yellow' | 'red'
-  category TEXT DEFAULT 'unknown',
-  definition TEXT,
-  flags JSONB DEFAULT '[]'::jsonb,           -- ['ultra-processed', 'additive', etc.]
-  created_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.user_scans (
+  id uuid primary key default gen_random_uuid(),
+  barcode text not null references public.products(barcode) on delete cascade,
+  user_id uuid references auth.users(id) on delete set null,
+  user_email text,
+  scanned_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_ingredient_name ON ingredient_dictionary(name);
-
-
--- ─── Ingredients AI Knowledge Cache (Dynamic) ─
--- Global cache populated by Gemini, eliminating redundant API calls
-CREATE TABLE IF NOT EXISTS ingredients_knowledge (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,
-  health_risk_score INTEGER CHECK (health_risk_score >= 1 AND health_risk_score <= 10),
-  processing_level INTEGER CHECK (processing_level >= 1 AND processing_level <= 4),
-  is_vegan BOOLEAN DEFAULT TRUE,
-  ai_justification TEXT,
-  
-  -- Deep Insights (Populated on-demand when user taps ingredient)
-  what_is_it TEXT,
-  purpose TEXT,
-  risk_explanation TEXT,
-  is_natural BOOLEAN,
-  is_ultra_processed BOOLEAN,
-  safer_alternatives JSONB,
-  detailed_analyzed_at TIMESTAMPTZ,
-  
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.user_contributions (
+  id uuid primary key default gen_random_uuid(),
+  barcode text,
+  product_name text,
+  contributor_email text,
+  raw_ocr_text text,
+  ai_filtered_data jsonb,
+  gemini_filtered_data jsonb,
+  front_photo_uploaded boolean not null default false,
+  back_photo_ocrd boolean not null default false,
+  ingredients jsonb,
+  status text not null default 'approved',
+  cleanup_trace jsonb not null default '[]'::jsonb,
+  provider_route jsonb,
+  created_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_ingredients_knowledge_name ON ingredients_knowledge(name);
-
-CREATE TRIGGER trg_ingredients_knowledge_updated
-  BEFORE UPDATE ON ingredients_knowledge
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-
-
--- ─── User Profiles ──────────────────────────
-CREATE TABLE IF NOT EXISTS user_profiles (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  device_id TEXT UNIQUE NOT NULL,
-  
-  allergies JSONB DEFAULT '[]'::jsonb,
-  diet TEXT DEFAULT 'omnivore',
-  gemini_model TEXT DEFAULT 'gemini-2.0-flash',
-  analysis_mode TEXT DEFAULT 'balanced',
-  health_mode TEXT DEFAULT 'relaxed',
-  off_enabled BOOLEAN DEFAULT TRUE,
-  ai_fallback BOOLEAN DEFAULT TRUE,
-  offline_mode BOOLEAN DEFAULT FALSE,
-  
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+create table if not exists public.processing_events (
+  id uuid primary key default gen_random_uuid(),
+  job_id text,
+  event_type text not null,
+  stage text,
+  status text not null default 'info',
+  barcode text,
+  personal_product_id uuid,
+  owner_email text,
+  provider_id text,
+  provider_label text,
+  model text,
+  masked_key text,
+  route_id text,
+  attempt_number integer,
+  message text,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
 );
 
--- ─── User Scans (History) ───────────────────
-CREATE TABLE IF NOT EXISTS user_scans (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  barcode TEXT NOT NULL REFERENCES products(barcode) ON DELETE CASCADE,
-  device_id TEXT REFERENCES user_profiles(device_id) ON DELETE CASCADE,
-  user_email TEXT,                -- Email of the user who scanned (set at login)
-  scanned_at TIMESTAMPTZ DEFAULT NOW()
+create or replace function public.generate_ffadz_code()
+returns text
+language plpgsql
+as $$
+declare
+  next_code text;
+begin
+  loop
+    next_code := 'FFADZ-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 5));
+    exit when not exists (
+      select 1
+      from public.personal_products
+      where ffadz_code = next_code
+    );
+  end loop;
+
+  return next_code;
+end;
+$$;
+
+create table if not exists public.personal_products (
+  id uuid primary key default gen_random_uuid(),
+  ffadz_code text not null unique,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  owner_email text not null,
+  product_name text not null,
+  brand text not null default '',
+  description text not null default '',
+  ingredients jsonb not null default '[]'::jsonb,
+  ingredients_raw text not null default '',
+  nutrition jsonb not null default '{}'::jsonb,
+  qr_status text not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_scans_barcode ON user_scans(barcode);
-CREATE INDEX IF NOT EXISTS idx_user_scans_date ON user_scans(scanned_at DESC);
-CREATE INDEX IF NOT EXISTS idx_user_scans_email ON user_scans(user_email);
+create or replace function public.assign_ffadz_code()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.ffadz_code is null or btrim(new.ffadz_code) = '' then
+    new.ffadz_code := public.generate_ffadz_code();
+  end if;
+  return new;
+end;
+$$;
 
--- ─── User Contributions ─────────────────────
--- Tracks explicit user contributions (Upload Photos)
--- front photo → uploaded to Open Food Facts
--- back photo  → OCR'd by Gemini, raw + filtered data stored here
-CREATE TABLE IF NOT EXISTS user_contributions (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id),
-  barcode TEXT NOT NULL,
-  product_name TEXT,                          -- Extracted from Gemini OCR
-  contributor_email TEXT,                     -- Email of the person who contributed
-  raw_ocr_text TEXT,                          -- Raw Gemini response (for debugging)
-  gemini_filtered_data JSONB,                 -- Structured { ingredients, nutrition }
-  ingredients JSONB DEFAULT '[]'::jsonb,      -- Array of ingredient strings for display
-  front_photo_uploaded BOOLEAN DEFAULT FALSE, -- Was front photo sent to OFF?
-  back_photo_ocrd BOOLEAN DEFAULT FALSE,      -- Was back photo scanned by Gemini?
-  image_urls JSONB DEFAULT '[]'::jsonb,       -- Legacy: keep for compat
-  status TEXT DEFAULT 'approved',
-  created_at TIMESTAMPTZ DEFAULT NOW()
+drop trigger if exists trg_assign_ffadz_code on public.personal_products;
+create trigger trg_assign_ffadz_code
+before insert on public.personal_products
+for each row
+execute function public.assign_ffadz_code();
+
+create table if not exists public.personal_product_images (
+  id uuid primary key default gen_random_uuid(),
+  personal_product_id uuid not null references public.personal_products(id) on delete cascade,
+  image_type text not null,
+  storage_provider text not null default 'cloudinary',
+  storage_path text,
+  public_url text not null,
+  provider_public_id text,
+  provider_asset_id text,
+  provider_version text,
+  width integer,
+  height integer,
+  bytes bigint,
+  format text,
+  upload_mode text not null default 'signed',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (personal_product_id, image_type)
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_contributions_user ON user_contributions(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_contributions_barcode ON user_contributions(barcode);
-
--- ─── Row Level Security (RLS) for Contributions ────────────────
-ALTER TABLE user_contributions ENABLE ROW LEVEL SECURITY;
-
--- Allow users to read ONLY their own contributions (or nothing if guest)
-CREATE POLICY "Users can view own contributions"
-ON user_contributions FOR SELECT
-USING (auth.email() = contributor_email);
-
--- Allow authenticated users to insert contributions matching their email
-CREATE POLICY "Users can insert own contributions"
-ON user_contributions FOR INSERT
-WITH CHECK (auth.email() = contributor_email);
-
--- Allow users to update their own contributions
-CREATE POLICY "Users can update own contributions"
-ON user_contributions FOR UPDATE
-USING (auth.email() = contributor_email)
-WITH CHECK (auth.email() = contributor_email);
-
--- Allow users to delete their own contributions
-CREATE POLICY "Users can delete own contributions"
-ON user_contributions FOR DELETE
-USING (auth.email() = contributor_email);
-
--- ─── Offline Sync Queue ─────────────────────
-CREATE TABLE IF NOT EXISTS sync_queue (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  job_type TEXT NOT NULL,
-  payload JSONB NOT NULL,
-  status TEXT DEFAULT 'pending',
-  retry_count INTEGER DEFAULT 0,
-  error_message TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  processed_at TIMESTAMPTZ
+create table if not exists public.personal_product_scans (
+  id uuid primary key default gen_random_uuid(),
+  personal_product_id uuid not null references public.personal_products(id) on delete cascade,
+  ffadz_code text not null,
+  scanned_by_user_id uuid references auth.users(id) on delete set null,
+  scanned_by_email text,
+  source text not null default 'qr',
+  created_at timestamptz not null default now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);
+alter table public.personal_products
+  alter column ffadz_code drop default;
 
+alter table public.personal_product_images
+  add column if not exists storage_provider text not null default 'cloudinary',
+  add column if not exists provider_public_id text,
+  add column if not exists provider_asset_id text,
+  add column if not exists provider_version text,
+  add column if not exists width integer,
+  add column if not exists height integer,
+  add column if not exists bytes bigint,
+  add column if not exists format text,
+  add column if not exists upload_mode text not null default 'signed';
 
--- ─── Auto-update timestamps ─────────────────
-CREATE OR REPLACE FUNCTION update_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'processing_events_personal_product_id_fkey'
+  ) then
+    alter table public.processing_events
+      add constraint processing_events_personal_product_id_fkey
+      foreign key (personal_product_id) references public.personal_products(id) on delete set null;
+  end if;
+end $$;
 
-CREATE TRIGGER trg_products_updated
-  BEFORE UPDATE ON products
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+create index if not exists idx_products_scanned_at on public.products (scanned_at desc);
+create index if not exists idx_user_scans_user_email on public.user_scans (user_email, scanned_at desc);
+create index if not exists idx_user_contributions_email on public.user_contributions (contributor_email, created_at desc);
+create index if not exists idx_processing_events_job_id on public.processing_events (job_id, created_at desc);
+create index if not exists idx_processing_events_barcode on public.processing_events (barcode, created_at desc);
+create index if not exists idx_personal_products_owner_email on public.personal_products (owner_email, created_at desc);
+create index if not exists idx_personal_products_ffadz_code on public.personal_products (ffadz_code);
+create index if not exists idx_personal_product_scans_product_id on public.personal_product_scans (personal_product_id, created_at desc);
 
-CREATE TRIGGER trg_user_profiles_updated
-  BEFORE UPDATE ON user_profiles
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+drop trigger if exists trg_products_updated_at on public.products;
+create trigger trg_products_updated_at
+before update on public.products
+for each row
+execute function public.set_updated_at();
 
+drop trigger if exists trg_product_ai_data_updated_at on public.product_ai_data;
+create trigger trg_product_ai_data_updated_at
+before update on public.product_ai_data
+for each row
+execute function public.set_updated_at();
 
--- ─── Row Level Security ─────────────────────
-ALTER TABLE products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE product_ai_data ENABLE ROW LEVEL SECURITY;
-ALTER TABLE product_images ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ingredient_dictionary ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_scans ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_contributions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE sync_queue ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ingredients_knowledge ENABLE ROW LEVEL SECURITY;
+drop trigger if exists trg_user_profiles_updated_at on public.user_profiles;
+create trigger trg_user_profiles_updated_at
+before update on public.user_profiles
+for each row
+execute function public.set_updated_at();
 
-ALTER TABLE threshold_limits ENABLE ROW LEVEL SECURITY;
+drop trigger if exists trg_personal_products_updated_at on public.personal_products;
+create trigger trg_personal_products_updated_at
+before update on public.personal_products
+for each row
+execute function public.set_updated_at();
 
--- Open access with anon key (tighten with auth later)
-CREATE POLICY "anon_all" ON products FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON product_ai_data FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON product_images FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON ingredient_dictionary FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON user_scans FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON user_profiles FOR ALL USING (true) WITH CHECK (true);
--- user_contributions has specific strict RLS policies defined above (do not use anon_all)
-CREATE POLICY "anon_all" ON sync_queue FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON ingredients_knowledge FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON threshold_limits FOR ALL USING (true) WITH CHECK (true);
+drop trigger if exists trg_personal_product_images_updated_at on public.personal_product_images;
+create trigger trg_personal_product_images_updated_at
+before update on public.personal_product_images
+for each row
+execute function public.set_updated_at();
 
+alter table public.personal_products enable row level security;
+alter table public.personal_product_images enable row level security;
+alter table public.personal_product_scans enable row level security;
 
--- ============================================
--- ✅ 8 tables:
---   products            — basic product data
---   product_ai_data     — cached AI analysis (separate from product)
---   product_images      — image storage references
---   ingredient_dictionary — master ingredient DB
---   user_scans          — scan history
---   user_profiles       — user preferences
---   user_contributions  — tracked user uploads (OCR/gemini)
---   sync_queue          — offline job queue
---   ingredients_knowledge — Dynamic global cache backed by AI
--- ============================================
+drop policy if exists personal_products_public_read on public.personal_products;
+create policy personal_products_public_read
+on public.personal_products
+for select
+using (true);
 
--- ─── GIN index for JSONB nutrition queries (Phase 4) ────────────────────────
--- Enables fast queries like: WHERE (nutrition->>'sugar')::numeric > 10
-CREATE INDEX IF NOT EXISTS idx_products_nutrition_gin   ON products USING GIN (nutrition);
-CREATE INDEX IF NOT EXISTS idx_products_ingredients_gin ON products USING GIN (ingredients);
+drop policy if exists personal_products_owner_insert on public.personal_products;
+create policy personal_products_owner_insert
+on public.personal_products
+for insert
+with check (auth.uid() = owner_id);
 
--- ─── AI processing status lock (Phase 1) ────────────────────────────────────
-ALTER TABLE product_ai_data ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'done';
-CREATE INDEX IF NOT EXISTS idx_product_ai_status ON product_ai_data(status);
+drop policy if exists personal_products_owner_update on public.personal_products;
+create policy personal_products_owner_update
+on public.personal_products
+for update
+using (auth.uid() = owner_id)
+with check (auth.uid() = owner_id);
 
--- ─── Unique constraint for product_images (fixes duplicate upsert) ──────────
-ALTER TABLE product_images ADD CONSTRAINT uq_product_images_barcode_type 
-  UNIQUE (barcode, image_type);
+drop policy if exists personal_products_owner_delete on public.personal_products;
+create policy personal_products_owner_delete
+on public.personal_products
+for delete
+using (auth.uid() = owner_id);
 
--- ─── Per-user isolation: link user_scans to real auth.users UUIDs ────────────
--- Adds user_id column so every scan row can be joined to auth.users in SQL Editor
-ALTER TABLE user_scans ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
-CREATE INDEX IF NOT EXISTS idx_user_scans_user_id ON user_scans(user_id);
+drop policy if exists personal_product_images_public_read on public.personal_product_images;
+create policy personal_product_images_public_read
+on public.personal_product_images
+for select
+using (true);
 
--- ─── Tighten user_scans RLS (replace open anon_all with user-scoped access) ──
--- Previously any user with the anon key could read ALL other users' scan history.
--- Now each user can only see their own rows.
-DROP POLICY IF EXISTS "anon_all" ON user_scans;
+drop policy if exists personal_product_images_owner_insert on public.personal_product_images;
+create policy personal_product_images_owner_insert
+on public.personal_product_images
+for insert
+with check (
+  exists (
+    select 1
+    from public.personal_products
+    where personal_products.id = personal_product_images.personal_product_id
+      and personal_products.owner_id = auth.uid()
+  )
+);
 
--- Logged-in users see only their own scans; guest users see nothing
-CREATE POLICY "users_own_scans_select" ON user_scans
-  FOR SELECT USING (user_email = auth.email() OR auth.email() IS NULL);
+drop policy if exists personal_product_images_owner_update on public.personal_product_images;
+create policy personal_product_images_owner_update
+on public.personal_product_images
+for update
+using (
+  exists (
+    select 1
+    from public.personal_products
+    where personal_products.id = personal_product_images.personal_product_id
+      and personal_products.owner_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.personal_products
+    where personal_products.id = personal_product_images.personal_product_id
+      and personal_products.owner_id = auth.uid()
+  )
+);
 
--- Insert remains open — scanner fires before auth state is guaranteed to be loaded
-CREATE POLICY "users_insert_scan" ON user_scans
-  FOR INSERT WITH CHECK (true);
+drop policy if exists personal_product_images_owner_delete on public.personal_product_images;
+create policy personal_product_images_owner_delete
+on public.personal_product_images
+for delete
+using (
+  exists (
+    select 1
+    from public.personal_products
+    where personal_products.id = personal_product_images.personal_product_id
+      and personal_products.owner_id = auth.uid()
+  )
+);
 
--- ─── Admin SQL: Run these in Supabase SQL Editor to see all data ─────────────
--- (SQL Editor runs as postgres superuser — RLS is bypassed automatically)
---
--- All users and their scan counts:
---   SELECT u.email, COUNT(s.id) AS scans
---   FROM auth.users u
---   LEFT JOIN user_scans s ON s.user_id = u.id
---   GROUP BY u.email ORDER BY scans DESC;
---
--- All products with AI scores:
---   SELECT p.name, p.brand, p.barcode, ai.ai_score, ai.animal_content_flag
---   FROM products p LEFT JOIN product_ai_data ai ON ai.barcode = p.barcode
---   ORDER BY ai.ai_score ASC;
---
--- All ingredients ever analyzed:
---   SELECT name, health_risk_score, is_vegan, is_ultra_processed, detailed_analyzed_at
---   FROM ingredients_knowledge ORDER BY health_risk_score DESC;
---
--- All user contributions:
---   SELECT contributor_email, product_name, barcode, created_at, front_photo_uploaded
---   FROM user_contributions ORDER BY created_at DESC;
+drop policy if exists personal_product_scans_insert_any on public.personal_product_scans;
+create policy personal_product_scans_insert_any
+on public.personal_product_scans
+for insert
+with check (true);
+
+drop policy if exists personal_product_scans_owner_read on public.personal_product_scans;
+create policy personal_product_scans_owner_read
+on public.personal_product_scans
+for select
+using (
+  exists (
+    select 1
+    from public.personal_products
+    where personal_products.id = personal_product_scans.personal_product_id
+      and personal_products.owner_id = auth.uid()
+  )
+);

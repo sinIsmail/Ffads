@@ -6,3 +6,12 @@ export { saveProduct, saveProductAIData, setAIProcessingStatus, getProducts, get
 export { getDeepIngredientKnowledge, updateDeepIngredientKnowledge } from './ingredients';
 export { recordScan, getUserScanHistory, getScanCount, logUserContribution, getUserContributions, getContributionCount } from './contributions';
 export { saveUserProfile, getUserProfile, saveProductImage, getProductImages } from './users';
+export { logProcessingEvent } from './processing';
+export {
+  createPersonalProduct,
+  listPersonalProducts,
+  getPersonalProductByCode,
+  getPersonalProductById,
+  lookupPersonalQr,
+  recordPersonalProductScan,
+} from './personalProducts';
